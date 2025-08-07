@@ -1,21 +1,20 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-import pandas as pd
 
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import pandas as pd
 
 class ReconciliationApp:
     def __init__(self, root, df_original, df_transformed):
         self.root = root
-        self.df_original_full = df_original  ## new 2
-        self.df_transformed_full = df_transformed  ## new 2
-        self.df_original = df_original.copy()  ## new 2
-        self.df_transformed = df_transformed.copy()  ## new 2
+        self.df_original_full = df_original.copy()
+        self.df_transformed_full = df_transformed.copy()
+        self.df_original = df_original.copy()
+        self.df_transformed = df_transformed.copy()
 
-        self.used_string_cols = []  ## new 2
-        self.remaining_string_cols = [col for col in df_original.columns if df_original[col].dtype == 'object']  ## new 2
-
-        self.numeric_cols = [col for col in df_original.columns if pd.api.types.is_numeric_dtype(df_original[col])]  ## new 2
-        self.selected_numeric_cols = []  ## new 2
+        self.used_string_cols = []
+        self.remaining_string_cols = [col for col in df_original.columns if df_original[col].dtype == 'object']
+        self.numeric_cols = [col for col in df_original.columns if pd.api.types.is_numeric_dtype(df_original[col])]
+        self.selected_numeric_cols = []
         self.string_vars = []
 
         self.setup_selection_gui()
@@ -27,28 +26,25 @@ class ReconciliationApp:
     def setup_selection_gui(self):
         self.clear_gui()
 
-        tk.Label(self.root, text="Select String Columns for Matching (Stepwise):").pack(pady=(10, 0))  ## new 2
+        tk.Label(self.root, text="Select String Columns for Matching:").pack(pady=(10, 0))
 
         self.string_vars = []
-        for col in self.remaining_string_cols:  ## new 2
+        for col in self.remaining_string_cols:
             var = tk.BooleanVar()
-            tk.Checkbutton(self.root, text=col, variable=var).pack(anchor="w")
+            chk = tk.Checkbutton(self.root, text=col, variable=var)
+            chk.pack(anchor="w")
             self.string_vars.append((col, var))
 
         tk.Label(self.root, text="Select Numeric Columns to Reconcile:").pack(pady=(10, 0))
 
         self.numeric_vars = []
-        for col in self.numeric_cols:  ## new 2
-            var = tk.BooleanVar(value=(col in self.selected_numeric_cols))  ## new 2
-            tk.Checkbutton(self.root, text=col, variable=var).pack(anchor="w")
+        for col in self.numeric_cols:
+            var = tk.BooleanVar(value=(col in self.selected_numeric_cols))
+            chk = tk.Checkbutton(self.root, text=col, variable=var)
+            chk.pack(anchor="w")
             self.numeric_vars.append((col, var))
 
-        button_frame = tk.Frame(self.root)  ## new 2
-        button_frame.pack(pady=10)  ## new 2
-
-        tk.Button(button_frame, text="Submit & Filter", command=self.apply_filter).grid(row=0, column=0, padx=5)  ## new 2
-        tk.Button(button_frame, text="Drill Down", command=self.drill_down).grid(row=0, column=1, padx=5)  ## new 2
-        tk.Button(button_frame, text="Run Final Reconciliation", command=self.reconcile).grid(row=0, column=2, padx=5)  ## new 2
+        tk.Button(self.root, text="Submit & Show Filtered Table", command=self.apply_filter).pack(pady=10)  ## new 2
 
     def apply_filter(self):  ## new 2
         new_keys = [col for col, var in self.string_vars if var.get()]
@@ -57,7 +53,7 @@ class ReconciliationApp:
             return
 
         self.used_string_cols.extend(new_keys)
-        self.remaining_string_cols = [col for col in self.remaining_string_cols if col not in self.used_string_cols]
+        self.remaining_string_cols = [col for col in self.remaining_string_cols if col not in new_keys]
 
         self.selected_numeric_cols = [col for col, var in self.numeric_vars if var.get()]
         if not self.selected_numeric_cols:
@@ -71,22 +67,21 @@ class ReconciliationApp:
         self.df_transformed["__filter_key__"] = concat_key(self.df_transformed)
 
         common_keys = set(self.df_original["__filter_key__"]).intersection(set(self.df_transformed["__filter_key__"]))
-
         self.df_original = self.df_original[self.df_original["__filter_key__"].isin(common_keys)].copy()
         self.df_transformed = self.df_transformed[self.df_transformed["__filter_key__"].isin(common_keys)].copy()
 
-        self.display_filtered_table(self.df_original)  ## new 2
+        self.display_filtered_table()
 
-    def display_filtered_table(self, df):  ## new 2
+    def display_filtered_table(self):  ## new 2
         self.clear_gui()
 
-        tk.Label(self.root, text=f"Filtered Data Preview (rows: {len(df)})").pack(pady=5)
+        tk.Label(self.root, text=f"Filtered Data Preview (Rows: {len(self.df_original)})").pack(pady=5)
 
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
 
-        tree = ttk.Treeview(frame, columns=list(df.columns), show="headings")
-        for col in df.columns:
+        tree = ttk.Treeview(frame, columns=list(self.df_original.columns), show="headings")
+        for col in self.df_original.columns:
             tree.heading(col, text=col)
             tree.column(col, width=120, anchor="w")
 
@@ -96,29 +91,31 @@ class ReconciliationApp:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
 
-        for _, row in df.iterrows():
+        for _, row in self.df_original.iterrows():
             tree.insert("", "end", values=list(row))
 
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(pady=10)
 
-        tk.Button(btn_frame, text="Drill Down Further", command=self.drill_down).grid(row=0, column=0, padx=5)
-        tk.Button(btn_frame, text="Run Final Reconciliation", command=self.reconcile).grid(row=0, column=1, padx=5)
-        tk.Button(btn_frame, text="Back to Column Selection", command=self.setup_selection_gui).grid(row=0, column=2, padx=5)
+        tk.Button(btn_frame, text="Next (Select More Columns)", command=self.setup_selection_gui).grid(row=0, column=0, padx=5)
+        tk.Button(btn_frame, text="Export Filtered to Excel", command=self.export_filtered).grid(row=0, column=1, padx=5)
+        tk.Button(btn_frame, text="Run Final Reconciliation", command=self.reconcile).grid(row=0, column=2, padx=5)
 
-    def drill_down(self):  ## new 2
-        if not self.remaining_string_cols:
-            messagebox.showinfo("No More Columns", "No more string columns left to drill down.")
-            return
-        self.setup_selection_gui()
+    def export_filtered(self):  ## new 2
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+        if file_path:
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                self.df_original.to_excel(writer, index=False, sheet_name='Filtered_Original')
+                self.df_transformed.to_excel(writer, index=False, sheet_name='Filtered_Transformed')
+            messagebox.showinfo("Exported", f"Filtered data saved to:\n{file_path}")
 
     def reconcile(self):
-        if not self.used_string_cols or not self.selected_numeric_cols:  ## new 2
-            messagebox.showerror("Selection Error", "Ensure at least one string column and numeric column are selected.")  ## new 2
+        if not self.used_string_cols or not self.selected_numeric_cols:
+            messagebox.showerror("Selection Error", "Ensure at least one string column and numeric column are selected.")
             return
 
-        original_grouped = self.df_original.groupby(self.used_string_cols)[self.selected_numeric_cols].sum().reset_index()  ## new 2
-        transformed_grouped = self.df_transformed.groupby(self.used_string_cols)[self.selected_numeric_cols].sum().reset_index()  ## new 2
+        original_grouped = self.df_original.groupby(self.used_string_cols)[self.selected_numeric_cols].sum().reset_index()
+        transformed_grouped = self.df_transformed.groupby(self.used_string_cols)[self.selected_numeric_cols].sum().reset_index()
 
         merged = pd.merge(
             original_grouped,
@@ -128,7 +125,7 @@ class ReconciliationApp:
             suffixes=('_original', '_transformed')
         )
 
-        for col in self.selected_numeric_cols:  ## new 2
+        for col in self.selected_numeric_cols:
             col_orig = f"{col}_original"
             col_trns = f"{col}_transformed"
             merged[col_orig] = merged[col_orig].astype(float)
@@ -193,10 +190,6 @@ if __name__ == "__main__":
 
     root = tk.Tk()
     root.title("Multi-step Reconciliation Tool")
+    root.geometry("1200x600")  ## new 2
     app = ReconciliationApp(root, df_original, df_transformed)
     root.mainloop()
-
-<!---
-AditiKollur/AditiKollur is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
-You can click the Preview link to take a look at your changes.
---->
