@@ -109,3 +109,66 @@ def display_results(self, df_result):
     for _, row in df_result.iterrows():
         tree.insert("", "end", values=list(row))
 
+    self.tree = tree
+
+    tk.Button(self.root, text="Next Drill Down", command=self.setup_selection_gui).pack(pady=5)
+    tk.Button(self.root, text="Export to Excel", command=self.export_to_excel).pack(pady=5)
+
+def export_to_excel(self):
+    if self.result_df is None:
+        messagebox.showerror("No Data", "No data to export")
+        return
+
+    file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                             filetypes=[("Excel files", "*.xlsx")])
+    if not file_path:
+        return
+
+    df = self.result_df.copy()
+    wb = Workbook()
+    ws_data = wb.active
+    ws_data.title = "Reconciliation Data"
+
+    for r in dataframe_to_rows(df, index=False, header=True):
+        ws_data.append(r)
+
+    ws_chart = wb.create_sheet(title="Bar Chart")
+
+    chart_data = df.melt(id_vars=['_filter_key'], var_name='Metric', value_name='Value')
+    pivot_df = chart_data.pivot(index='_filter_key', columns='Metric', values='Value').reset_index()
+
+    for r in dataframe_to_rows(pivot_df, index=False, header=True):
+        ws_chart.append(r)
+
+    chart = BarChart()
+    chart.type = "col"
+    chart.title = "Original vs Transformed Metrics"
+    chart.y_axis.title = "Value"
+    chart.x_axis.title = "_filter_key"
+
+    num_cols = len(pivot_df.columns)
+    data = Reference(ws_chart, min_col=2, max_col=num_cols, min_row=1, max_row=ws_chart.max_row)
+    cats = Reference(ws_chart, min_col=1, min_row=2, max_row=ws_chart.max_row)
+    chart.add_data(data, titles_from_data=True)
+    chart.set_categories(cats)
+
+    ws_chart.add_chart(chart, "H2")
+    wb.save(file_path)
+    messagebox.showinfo("Exported", f"Data exported to {file_path}")
+
+Example use
+
+if name == "main": df_original = pd.DataFrame({ 'Region': ['North', 'South', 'East'], 'Product': ['A', 'B', 'C'], 'Sales': [100, 200, 150], 'Profit': [10, 20, 15] })
+
+df_transformed = pd.DataFrame({
+    'Region': ['North', 'South', 'East'],
+    'Product': ['A', 'B', 'C'],
+    'Sales': [100, 250, 150],
+    'Profit': [10, 22, 15]
+})
+
+root = tk.Tk()
+root.title("Multi-Step Reconciliation Tool")
+app = ReconciliationApp(root, df_original, df_transformed)
+root.mainloop()
+
