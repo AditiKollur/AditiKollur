@@ -1,6 +1,8 @@
-import tkinter as tk from tkinter import ttk, messagebox, filedialog import pandas as pd from openpyxl import Workbook from openpyxl.chart import BarChart, Reference from openpyxl.utils.dataframe import dataframe_to_rows
+import tkinter as tk from tkinter import ttk, messagebox, filedialog import pandas as pd import os from openpyxl import Workbook from openpyxl.utils.dataframe import dataframe_to_rows from openpyxl.chart import BarChart, Reference from openpyxl.styles import Font
 
-class ReconciliationApp: def init(self, root, df_original, df_transformed): self.root = root self.df_original = df_original.copy() self.df_transformed = df_transformed.copy() self.all_string_columns = [col for col in df_original.columns if df_original[col].dtype == 'object'] self.numeric_columns = [col for col in df_original.columns if pd.api.types.is_numeric_dtype(df_original[col])] self.selected_keys = [] self.result_df = None self.setup_selection_gui()
+class ReconciliationApp: def init(self, root, df_original, df_transformed): self.root = root self.df_original = df_original self.df_transformed = df_transformed self.selected_keys = [] self.remaining_keys = [] self.selected_values = None  # ##new self.numeric_cols = [] self.drill_level = 0
+
+self.setup_selection_gui()
 
 def clear_gui(self):
     for widget in self.root.winfo_children():
@@ -8,86 +10,93 @@ def clear_gui(self):
 
 def setup_selection_gui(self):
     self.clear_gui()
-    tk.Label(self.root, text="Select String Columns (keys for match):").pack()
 
+    tk.Label(self.root, text=f"Select String Columns for Drill Down Level {self.drill_level+1}:").pack()
     self.string_vars = []
-    for col in self.all_string_columns:
-        if col not in self.selected_keys:
-            var = tk.BooleanVar()
-            tk.Checkbutton(self.root, text=col, variable=var).pack(anchor="w")
-            self.string_vars.append((col, var))
+    current_cols = [col for col in self.df_original.columns if self.df_original[col].dtype == 'object']
+    current_cols = [col for col in current_cols if col not in self.selected_keys]
 
-    tk.Label(self.root, text="Select Numeric Columns (to compare):").pack(pady=(10, 0))
-
-    self.numeric_vars = []
-    for col in self.numeric_columns:
+    for col in current_cols:
         var = tk.BooleanVar()
         tk.Checkbutton(self.root, text=col, variable=var).pack(anchor="w")
-        self.numeric_vars.append((col, var))
+        self.string_vars.append((col, var))
+
+    tk.Label(self.root, text="Select Numeric Columns (to compare):").pack(pady=(10, 0))
+    self.numeric_vars = []
+    for col in self.df_original.columns:
+        if pd.api.types.is_numeric_dtype(self.df_original[col]):
+            var = tk.BooleanVar()
+            tk.Checkbutton(self.root, text=col, variable=var).pack(anchor="w")
+            self.numeric_vars.append((col, var))
 
     tk.Button(self.root, text="Submit", command=self.reconcile).pack(pady=10)
 
 def reconcile(self):
     new_keys = [col for col, var in self.string_vars if var.get()]
-    numeric_cols = [col for col, var in self.numeric_vars if var.get()]
+    self.numeric_cols = [col for col, var in self.numeric_vars if var.get()]
 
-    if not new_keys or not numeric_cols:
+    if not new_keys or not self.numeric_cols:
         messagebox.showerror("Selection Error", "Please select both key and numeric columns.")
         return
 
     self.selected_keys.extend(new_keys)
 
-    key_cols = self.selected_keys
+    df1 = self.df_original.copy()
+    df2 = self.df_transformed.copy()
 
-    # Group and aggregate numeric values
-    original_grouped = self.df_original.groupby(key_cols)[numeric_cols].sum().reset_index()
-    transformed_grouped = self.df_transformed.groupby(key_cols)[numeric_cols].sum().reset_index()
+    if self.selected_values is not None:
+        df1 = df1[df1['_filter_key'].isin(self.selected_values)]
+        df2 = df2[df2['_filter_key'].isin(self.selected_values)]
+
+    df1['_filter_key'] = df1[self.selected_keys].astype(str).agg(' | '.join, axis=1)
+    df2['_filter_key'] = df2[self.selected_keys].astype(str).agg(' | '.join, axis=1)
+
+    grouped1 = df1.groupby(['_filter_key'] + self.selected_keys)[self.numeric_cols].sum().reset_index()
+    grouped2 = df2.groupby(['_filter_key'] + self.selected_keys)[self.numeric_cols].sum().reset_index()
 
     merged = pd.merge(
-        original_grouped,
-        transformed_grouped,
-        on=key_cols,
+        grouped1,
+        grouped2,
+        on=['_filter_key'] + self.selected_keys,
         how='outer',
         suffixes=('_original', '_transformed')
     )
 
-    for col in numeric_cols:
+    for col in self.numeric_cols:
         col_orig = f"{col}_original"
         col_trns = f"{col}_transformed"
 
-        merged[col_orig] = pd.to_numeric(merged[col_orig], errors='coerce')
-        merged[col_trns] = pd.to_numeric(merged[col_trns], errors='coerce')
+        merged[col_orig] = merged[col_orig].astype('float64')
+        merged[col_trns] = merged[col_trns].astype('float64')
 
         def get_anomaly(row):
             v1, v2 = row[col_orig], row[col_trns]
             if pd.isna(v1) or pd.isna(v2):
-                return "missing"
+                return "Missing"
             elif v1 != v2:
-                return "anomaly"
-            return "ok"
+                return "Anomaly"
+            return "OK"
 
         merged[f"{col}_anomaly"] = merged.apply(get_anomaly, axis=1)
         merged[col_orig] = merged[col_orig].fillna("Missing")
         merged[col_trns] = merged[col_trns].fillna("Missing")
 
-    merged['_filter_key'] = merged[key_cols].astype(str).agg('|'.join, axis=1)
-    self.result_df = merged
     self.display_results(merged)
 
 def display_results(self, df_result):
     self.clear_gui()
+    self.df_result = df_result
 
     tk.Label(self.root, text="Reconciliation Results").pack()
 
-    filter_values = sorted(df_result['_filter_key'].unique())
-    self.filter_var = tk.StringVar(value=filter_values)
+    frame_top = tk.Frame(self.root)
+    frame_top.pack(fill="x")
 
-    filter_label = tk.Label(self.root, text="Filter by Key:")
-    filter_label.pack()
+    tk.Label(frame_top, text="Filter by _filter_key:").pack(side="left")
+    self.filter_var = tk.StringVar(value=df_result['_filter_key'].unique().tolist())
 
-    filter_box = tk.Listbox(self.root, listvariable=self.filter_var, selectmode="multiple", height=5)
-    filter_box.pack()
-    self.filter_box = filter_box
+    self.filter_box = tk.Listbox(frame_top, listvariable=self.filter_var, selectmode="multiple", height=5, width=80)
+    self.filter_box.pack(side="left", padx=5)
 
     frame = tk.Frame(self.root)
     frame.pack(fill="both", expand=True)
@@ -109,66 +118,73 @@ def display_results(self, df_result):
     for _, row in df_result.iterrows():
         tree.insert("", "end", values=list(row))
 
-    self.tree = tree
-
-    tk.Button(self.root, text="Next Drill Down", command=self.setup_selection_gui).pack(pady=5)
     tk.Button(self.root, text="Export to Excel", command=self.export_to_excel).pack(pady=5)
+    tk.Button(self.root, text="Next Drill Down", command=self.next_drill_down).pack(pady=5)
+    tk.Button(self.root, text="Back", command=self.setup_selection_gui).pack(pady=5)
+
+def next_drill_down(self):
+    selected = [self.filter_box.get(i) for i in self.filter_box.curselection()]
+    self.selected_values = selected if selected else None
+    self.drill_level += 1
+    self.setup_selection_gui()
 
 def export_to_excel(self):
-    if self.result_df is None:
-        messagebox.showerror("No Data", "No data to export")
-        return
-
-    file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                             filetypes=[("Excel files", "*.xlsx")])
+    file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
     if not file_path:
         return
 
-    df = self.result_df.copy()
     wb = Workbook()
-    ws_data = wb.active
-    ws_data.title = "Reconciliation Data"
+    ws1 = wb.active
+    ws1.title = "Reconciliation Data"
 
-    for r in dataframe_to_rows(df, index=False, header=True):
-        ws_data.append(r)
+    for r in dataframe_to_rows(self.df_result, index=False, header=True):
+        ws1.append(r)
 
-    ws_chart = wb.create_sheet(title="Bar Chart")
+    # Create bar charts for each selected key
+    chart_sheet = wb.create_sheet(title="Bar Chart")
+    for i, key in enumerate(self.selected_keys):
+        for col in self.numeric_cols:
+            col_orig = f"{col}_original"
+            col_trns = f"{col}_transformed"
 
-    chart_data = df.melt(id_vars=['_filter_key'], var_name='Metric', value_name='Value')
-    pivot_df = chart_data.pivot(index='_filter_key', columns='Metric', values='Value').reset_index()
+            filtered_df = self.df_result[[key, '_filter_key', col_orig, col_trns]].dropna()
+            chart_data = filtered_df.groupby(key)[[col_orig, col_trns]].sum().reset_index()
 
-    for r in dataframe_to_rows(pivot_df, index=False, header=True):
-        ws_chart.append(r)
+            start_row = i * (len(chart_data) + 8) + 1
 
-    chart = BarChart()
-    chart.type = "col"
-    chart.title = "Original vs Transformed Metrics"
-    chart.y_axis.title = "Value"
-    chart.x_axis.title = "_filter_key"
+            for row_idx, row in enumerate(dataframe_to_rows(chart_data, index=False, header=True), start=start_row):
+                chart_sheet.append(row)
 
-    num_cols = len(pivot_df.columns)
-    data = Reference(ws_chart, min_col=2, max_col=num_cols, min_row=1, max_row=ws_chart.max_row)
-    cats = Reference(ws_chart, min_col=1, min_row=2, max_row=ws_chart.max_row)
-    chart.add_data(data, titles_from_data=True)
-    chart.set_categories(cats)
+            chart = BarChart()
+            chart.title = f"{col} by {key}"
+            chart.y_axis.title = col
+            chart.x_axis.title = key
 
-    ws_chart.add_chart(chart, "H2")
+            data_ref = Reference(chart_sheet, min_col=2, max_col=3,
+                                 min_row=start_row, max_row=start_row + len(chart_data))
+            cats_ref = Reference(chart_sheet, min_col=1, min_row=start_row + 1,
+                                 max_row=start_row + len(chart_data))
+
+            chart.add_data(data_ref, titles_from_data=True)
+            chart.set_categories(cats_ref)
+
+            chart_sheet.add_chart(chart, f"E{start_row}")
+
     wb.save(file_path)
-    messagebox.showinfo("Exported", f"Data exported to {file_path}")
 
-Example use
+Sample usage
 
-if name == "main": df_original = pd.DataFrame({ 'Region': ['North', 'South', 'East'], 'Product': ['A', 'B', 'C'], 'Sales': [100, 200, 150], 'Profit': [10, 20, 15] })
+if name == "main": df_original = pd.DataFrame({ 'Region': ['North', 'South', 'East', 'North'], 'Product': ['A', 'B', 'C', 'A'], 'Sales': [100, 200, 150, 120], 'Profit': [10, 20, 15, 11] })
 
 df_transformed = pd.DataFrame({
-    'Region': ['North', 'South', 'East'],
-    'Product': ['A', 'B', 'C'],
-    'Sales': [100, 250, 150],
-    'Profit': [10, 22, 15]
+    'Region': ['North', 'South', 'East', 'West'],
+    'Product': ['A', 'B', 'C', 'C'],
+    'Sales': [100, 250, 150, 50],
+    'Profit': [10, 22, 15, 5]
 })
 
 root = tk.Tk()
-root.title("Multi-Step Reconciliation Tool")
+root.title("Reconciliation Tool")
 app = ReconciliationApp(root, df_original, df_transformed)
 root.mainloop()
 
