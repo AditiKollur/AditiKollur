@@ -259,16 +259,22 @@ class ReconciliationApp:
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Generate Table", command=self.generate_table).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Back to String Selection", command=lambda: self.string_col_selection_page(initial=True)).pack(side="left")
 
-    def generate_table(self):
-        if not self.selected_numeric_cols:
+        def on_generate():
             selected_numerics = [col for col, var in self.current_numeric_selection_vars if var.get()]
             if not selected_numerics:
                 messagebox.showerror("Selection Error", "Select at least one numeric column.")
                 return
             self.selected_numeric_cols = selected_numerics
+            self.generate_table()
+
+        ttk.Button(btn_frame, text="Generate Table", command=on_generate).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Back to String Selection", command=lambda: self.string_col_selection_page(initial=True)).pack(side="left")
+
+    def generate_table(self):
+        if not self.selected_numeric_cols:
+            messagebox.showerror("Error", "No numeric columns selected.")
+            return
 
         # Filter original and transformed data based on previous filter selections:
         if self.current_filter_level == 0:
@@ -284,6 +290,10 @@ class ReconciliationApp:
                 mask_trans = pd.Series([True] * len(self.df_transformed_full))
             df_orig_filtered = self.df_original_full.loc[mask_orig].copy()
             df_trans_filtered = self.df_transformed_full.loc[mask_trans].copy()
+
+        if df_orig_filtered.empty or df_trans_filtered.empty:
+            messagebox.showerror("No Data", "No data available after filtering with current selection.")
+            return
 
         # Current filter key col name:
         current_filter_key_col = f"_filter_key{self.current_filter_level + 1}"
@@ -483,7 +493,7 @@ class ReconciliationApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1000x700")
+    root.geometry("1100x700")
     app = ReconciliationApp(root)
     root.mainloop()
 
