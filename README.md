@@ -19,17 +19,15 @@ class ReconciliationApp:
         self.df_original_full = None
         self.df_transformed_full = None
 
-        # History of drilldown string columns selected per step (list of list of cols)
-        self.drilldown_history = []
-        # History of filter keys selected per drilldown step (list of list of filter keys)
-        self.filter_keys_history = []
-
-        self.selected_numeric_cols = []  # Numeric cols selected once
+        self.all_selected_string_cols = []  # All string cols selected so far
+        self.selected_numeric_cols = []     # Numeric cols selected once
 
         self.output_folder = None
         self.export_wb_path = None
         self.export_wb = None
         self.export_counter = 0
+
+        self.current_filtered_keys = None  # Selected filter keys on previously selected string columns
 
         self.current_string_selection_vars = []
         self.current_numeric_selection_vars = []
@@ -137,13 +135,14 @@ class ReconciliationApp:
         self.string_cols_available = string_cols
         self.numeric_cols_available = numeric_cols
 
-        self.drilldown_history = []
-        self.filter_keys_history = []
+        self.all_selected_string_cols = []
         self.selected_numeric_cols = []
         self.export_counter = 0
         self.export_wb_path = None
         self.export_wb = None
         self.output_folder = output_folder
+        self.current_filtered_keys = None
+        self.current_table_df = None
 
         self.string_col_selection_page(initial=True)
 
@@ -165,8 +164,7 @@ class ReconciliationApp:
         ttk.Label(frame, text=title_text).pack(anchor="w")
 
         # For drilldown, show only columns NOT already selected
-        selected_so_far = [col for step in self.drilldown_history for col in step]
-        available = [c for c in self.string_cols_available if c not in selected_so_far]
+        available = [c for c in self.string_cols_available if c not in self.all_selected_string_cols]
         if not available:
             messagebox.showinfo("No More Strings", "No more string columns left to select for drill down.\nProceeding to export and inspection.")
             self.show_table_with_filters()
@@ -212,8 +210,10 @@ class ReconciliationApp:
             messagebox.showerror("Selection Error", "Select at least one string column.")
             return
 
-        # Append selected columns for this drilldown step
-        self.drilldown_history.append(selected_strings)
+        # Add newly selected string cols to all_selected_string_cols
+        for col in selected_strings:
+            if col not in self.all_selected_string_cols:
+                self.all_selected_string_cols.append(col)
 
         if initial:
             self.numeric_col_selection_page()
@@ -265,47 +265,37 @@ class ReconciliationApp:
                 return
             self.selected_numeric_cols = selected_numerics
 
-        # All string cols selected so far across drilldowns
-        all_selected_string_cols = [col for step in self.drilldown_history for col in step]
+        # Filter original dataframes by previously selected keys on the string columns that were selected BEFORE current drilldown
+        prev_string_cols = self.all_selected_string_cols[:-len(self.current_filtered_keys) if self.current_filtered_keys else 0]
 
-        # Determine previous drilldown step cols (all except last step)
-        if len(self.drilldown_history) > 1:
-            prev_string_cols = [col for step in self.drilldown_history[:-1] for col in step]
-            prev_filter_keys = self.filter_keys_history[-1] if self.filter_keys_history else None
-        else:
-            prev_string_cols = []
-            prev_filter_keys = None
-
-        if prev_filter_keys and prev_string_cols:
+        if self.current_filtered_keys and prev_string_cols:
+            # Filter both dataframes by previously selected keys on prev_string_cols
             key_col_orig = self.concat_filter_key(self.df_original_full, prev_string_cols)
             key_col_trans = self.concat_filter_key(self.df_transformed_full, prev_string_cols)
 
-            mask_orig = key_col_orig.isin(prev_filter_keys)
-            mask_trans = key_col_trans.isin(prev_filter_keys)
+            mask_orig = key_col_orig.isin(self.current_filtered_keys)
+            mask_trans = key_col_trans.isin(self.current_filtered_keys)
 
             df_orig_filtered = self.df_original_full.loc[mask_orig].copy()
             df_trans_filtered = self.df_transformed_full.loc[mask_trans].copy()
         else:
+            # No filtering if no previous filter keys selected
             df_orig_filtered = self.df_original_full.copy()
             df_trans_filtered = self.df_transformed_full.copy()
 
-        df_orig_filtered['_filter_key'] = self.concat_filter_key(df_orig_filtered, all_selected_string_cols)
-        df_trans_filtered['_filter_key'] = self.concat_filter_key(df_trans_filtered, all_selected_string_cols)
+        # Now group on all selected string cols (including newly selected ones)
+        df_orig_filtered['_filter_key'] = self.concat_filter_key(df_orig_filtered, self.all_selected_string_cols)
+        df_trans_filtered['_filter_key'] = self.concat_filter_key(df_trans_filtered, self.all_selected_string_cols)
 
-        group_cols = all_selected_string_cols
+        group_cols = self.all_selected_string_cols
 
         orig_grouped = df_orig_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
         trans_grouped = df_trans_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
 
         merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
-        merged['_filter_key'] = self.concat_filter_key(merged, all_selected_string_cols)
+        merged['_filter_key'] = self.concat_filter_key(merged, self.all_selected_string_cols)
 
-        if merged.empty:
-            messagebox.showwarning("No Data", "No matching data found for the selected filters.")
-            self.current_table_df = pd.DataFrame()
-            self.show_table_with_filters()
-            return
-
+        # Calculate anomaly status columns for each numeric col
         for col in self.selected_numeric_cols:
             col_orig = f"{col}_orig"
             col_trans = f"{col}_trans"
@@ -327,6 +317,9 @@ class ReconciliationApp:
 
         self.current_table_df = merged.copy()
 
+        # Reset filter selections for this new table
+        self.current_filtered_keys = None
+
         self.show_table_with_filters()
 
     def show_table_with_filters(self):
@@ -336,7 +329,7 @@ class ReconciliationApp:
 
         ttk.Label(frame, text="Select filter keys for drilldown (multiple selection allowed):").pack(anchor="w")
 
-        filter_keys = sorted(self.current_table_df['_filter_key'].dropna().unique()) if self.current_table_df is not None else []
+        filter_keys = sorted(self.current_table_df['_filter_key'].dropna().unique())
 
         self.current_filter_listbox = tk.Listbox(frame, selectmode='extended', height=8)
         for key in filter_keys:
@@ -358,18 +351,17 @@ class ReconciliationApp:
         vsb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
 
-        if self.current_table_df is not None:
-            cols = list(self.current_table_df.columns)
-            visible_cols = [c for c in cols if c != '_filter_key']
-            tree["columns"] = visible_cols
+        cols = list(self.current_table_df.columns)
+        visible_cols = [c for c in cols if c != '_filter_key']
+        tree["columns"] = visible_cols
 
-            for c in visible_cols:
-                tree.heading(c, text=c)
-                tree.column(c, width=120, anchor='w')
+        for c in visible_cols:
+            tree.heading(c, text=c)
+            tree.column(c, width=120, anchor='w')
 
-            for _, row in self.current_table_df.iterrows():
-                values = [row[c] for c in visible_cols]
-                tree.insert("", "end", values=values)
+        for _, row in self.current_table_df.iterrows():
+            values = [row[c] for c in visible_cols]
+            tree.insert("", "end", values=values)
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
@@ -382,11 +374,11 @@ class ReconciliationApp:
         if self.current_filter_listbox:
             selected = [self.current_filter_listbox.get(i) for i in self.current_filter_listbox.curselection()]
             if selected:
-                self.filter_keys_history.append(selected)
+                self.current_filtered_keys = selected
             else:
-                self.filter_keys_history.append(None)
+                self.current_filtered_keys = None
         else:
-            self.filter_keys_history.append(None)
+            self.current_filtered_keys = None
 
         self.string_col_selection_page(initial=False)
 
@@ -394,7 +386,7 @@ class ReconciliationApp:
         if self.current_table_df is None or self.current_table_df.empty:
             messagebox.showerror("Error", "No table to export.")
             return
-    
+
         if self.export_wb is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"Reconcile_{timestamp}.xlsx"
@@ -405,87 +397,72 @@ class ReconciliationApp:
             self.export_counter = 1
         else:
             self.export_counter += 1
-    
+
         sheet_name = f"Sheet{self.export_counter}"
+
         ws = self.export_wb.create_sheet(title=sheet_name)
-    
-        # Write DataFrame to sheet
+
         for r in dataframe_to_rows(self.current_table_df, index=False, header=True):
             ws.append(r)
-    
-        # If no numeric cols selected, skip charts
-        if not self.selected_numeric_cols:
-            try:
-                self.export_wb.save(self.export_wb_path)
-                messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
-            except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
-            return
-    
-        num_col = self.selected_numeric_cols[0]
-        col_orig = f"{num_col}_orig"
-        col_trans = f"{num_col}_trans"
-    
-        if col_orig not in self.current_table_df.columns or col_trans not in self.current_table_df.columns:
-            try:
-                self.export_wb.save(self.export_wb_path)
-                messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
-            except Exception as e:
-                messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
-            return
-    
-        # Get string columns in current drilldown level (columns used for grouping in current table)
-        # They are all string columns in self.drilldown_history flattened
-        current_string_cols = [col for step in self.drilldown_history for col in step]
-    
-        # Create one chart sheet per string column
-        for idx, s_col in enumerate(current_string_cols, start=1):
-            chart_ws = self.export_wb.create_sheet(title=f"Chart_{self.export_counter}_{s_col}")
-    
-            # Group data by this string col and sum numeric original and transformed values
-            grouped = self.current_table_df.groupby(s_col)[[col_orig, col_trans]].sum().reset_index()
-    
-            if grouped.empty:
-                continue
-    
-            # Write grouped data to chart sheet starting at A1
-            for r in dataframe_to_rows(grouped, index=False, header=True):
-                chart_ws.append(r)
-    
-            # Determine columns for categories and data
-            cat_col = 1  # string column unique values (A)
-            orig_col_idx = 2  # original sums (B)
-            trans_col_idx = 3  # transformed sums (C)
-            nrows = len(grouped) + 1  # including header
-    
-            cats = Reference(chart_ws, min_col=cat_col, min_row=2, max_row=nrows)
-            data = Reference(chart_ws, min_col=orig_col_idx, min_row=1, max_row=nrows)
-    
-            chart = BarChart()
-            chart.type = "col"
-            chart.style = 10
-            chart.title = f"{num_col} by {s_col} (Orig vs Trans)"
-            chart.y_axis.title = num_col
-            chart.x_axis.title = s_col
-    
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-            chart.legend.position = "r"
-            chart.dataLabels = DataLabelList()
-            chart.dataLabels.showVal = True
-    
-            # Place chart at A5 or so, to leave space for data table
-            chart_ws.add_chart(chart, "E2")
-    
+
+        # Create bar charts: one chart per selected string column, showing original and transformed numeric values
+        if self.selected_numeric_cols:
+            num_col = self.selected_numeric_cols[0]  # We pick the first numeric column for demonstration
+            col_orig = f"{num_col}_orig"
+            col_trans = f"{num_col}_trans"
+
+            current_string_cols = self.all_selected_string_cols
+
+            for idx, s_col in enumerate(current_string_cols, start=1):
+                chart_ws = self.export_wb.create_sheet(title=f"Chart_{self.export_counter}_{s_col}")
+
+                # Prepare data for chart
+                temp_df = self.current_table_df.copy()
+                # Replace 'Missing' with 0 only for chart data
+                temp_df[col_orig] = pd.to_numeric(temp_df[col_orig].replace("Missing", 0), errors='coerce').fillna(0)
+                temp_df[col_trans] = pd.to_numeric(temp_df[col_trans].replace("Missing", 0), errors='coerce').fillna(0)
+
+                grouped = temp_df.groupby(s_col)[[col_orig, col_trans]].sum().reset_index()
+
+                if grouped.empty:
+                    continue
+
+                for r in dataframe_to_rows(grouped, index=False, header=True):
+                    chart_ws.append(r)
+
+                cat_col = 1  # string column unique values (A)
+                orig_col_idx = 2  # original sums (B)
+                trans_col_idx = 3  # transformed sums (C)
+                nrows = len(grouped) + 1  # including header
+
+                cats = Reference(chart_ws, min_col=cat_col, min_row=2, max_row=nrows)
+                data = Reference(chart_ws, min_col=orig_col_idx, min_row=1, max_row=nrows)
+
+                chart = BarChart()
+                chart.type = "col"
+                chart.style = 10
+                chart.title = f"{num_col} by {s_col} (Orig vs Trans)"
+                chart.y_axis.title = num_col
+                chart.x_axis.title = s_col
+
+                chart.add_data(data, titles_from_data=True)
+                chart.set_categories(cats)
+                chart.legend.position = "r"
+                chart.dataLabels = DataLabelList()
+                chart.dataLabels.showVal = True
+
+                chart_ws.add_chart(chart, "E2")
+
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Export Successful", f"Exported current table and charts to {self.export_wb_path}")
+            messagebox.showinfo("Export Successful", f"Exported sheet '{sheet_name}' to:\n{self.export_wb_path}")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("1100x700")
     app = ReconciliationApp(root)
     root.mainloop()
 
