@@ -27,7 +27,7 @@ class DataReconciliationApp:
             widget.destroy()
 
     def drop_single_unique_columns(self, df):
-        # Drops columns with only 1 unique value including NaN (dropna=False)
+        # Drop columns with only 1 unique value including NaN
         return df.loc[:, df.nunique(dropna=False) > 1]
 
     def init_file_selection_page(self):
@@ -35,11 +35,9 @@ class DataReconciliationApp:
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
         tk.Label(frame, text="Select Original File:").pack(pady=(10,0))
-        self.original_file_btn = tk.Button(frame, text="Browse", command=self.load_original_file)
-        self.original_file_btn.pack(pady=(0,10))
+        tk.Button(frame, text="Browse", command=self.load_original_file).pack(pady=(0,10))
         tk.Label(frame, text="Select Transformed File:").pack(pady=(10,0))
-        self.transformed_file_btn = tk.Button(frame, text="Browse", command=self.load_transformed_file)
-        self.transformed_file_btn.pack(pady=(0,10))
+        tk.Button(frame, text="Browse", command=self.load_transformed_file).pack(pady=(0,10))
         tk.Button(frame, text="Next", command=self.init_column_selection_page).pack(pady=20)
 
     def load_original_file(self):
@@ -59,14 +57,14 @@ class DataReconciliationApp:
             messagebox.showerror("Error", "Please load both files before proceeding.")
             return
 
-        # Drop columns with only 1 unique value including NaN from both dataframes
+        # Drop columns with only 1 unique value including NaN from both DataFrames
         df_orig_trimmed = self.drop_single_unique_columns(self.df_original)
         df_trans_trimmed = self.drop_single_unique_columns(self.df_transformed)
 
         # Find common columns after dropping single-unique-value columns
         common_cols = list(set(df_orig_trimmed.columns) & set(df_trans_trimmed.columns))
 
-        # Separate string and numeric columns from original trimmed df (assumes same dtypes)
+        # Separate string and numeric columns from trimmed original DataFrame
         self.string_cols = [c for c in common_cols if df_orig_trimmed[c].dtype == 'object']
         self.numeric_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(df_orig_trimmed[c])]
 
@@ -74,8 +72,8 @@ class DataReconciliationApp:
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
 
-        # String columns selection UI
-        tk.Label(frame, text="Select String Columns:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
+        # String columns selection
+        tk.Label(frame, text="Select String Columns (Dimensions):").grid(row=0, column=0, padx=10, pady=5, sticky="w")
         self.string_listbox = tk.Listbox(frame, selectmode="multiple", exportselection=False, height=10)
         for col in self.string_cols:
             self.string_listbox.insert(tk.END, col)
@@ -84,8 +82,8 @@ class DataReconciliationApp:
         scrollbar1.grid(row=1, column=1, sticky="ns", pady=5)
         self.string_listbox.config(yscrollcommand=scrollbar1.set)
 
-        # Numeric columns selection UI
-        tk.Label(frame, text="Select Numeric Columns:").grid(row=0, column=2, padx=10, pady=5, sticky="w")
+        # Numeric columns selection
+        tk.Label(frame, text="Select Numeric Columns (Measures):").grid(row=0, column=2, padx=10, pady=5, sticky="w")
         self.numeric_listbox = tk.Listbox(frame, selectmode="multiple", exportselection=False, height=10)
         for col in self.numeric_cols:
             self.numeric_listbox.insert(tk.END, col)
@@ -105,57 +103,46 @@ class DataReconciliationApp:
         self.selected_numeric_cols = [self.numeric_cols[i] for i in self.numeric_listbox.curselection()]
 
         if not self.selected_string_cols or not self.selected_numeric_cols:
-            messagebox.showerror("Error", "Please select at least one string and one numeric column.")
+            messagebox.showerror("Error", "Please select at least one dimension and one measure.")
             return
 
-        # Subset columns to selected keys + numeric cols
-        cols_orig = self.selected_string_cols + self.selected_numeric_cols
-        cols_trans = self.selected_string_cols + self.selected_numeric_cols
+        # Aggregate original and transformed DataFrames on selected columns
+        print("Aggregating original DataFrame...")
+        orig_agg = self.df_original.groupby(self.selected_string_cols)[self.selected_numeric_cols].sum().reset_index()
+        print(f"Original aggregation shape: {orig_agg.shape}")
 
-        # Keep only columns that exist in each df (to avoid KeyError)
-        cols_orig = [c for c in cols_orig if c in self.df_original.columns]
-        cols_trans = [c for c in cols_trans if c in self.df_transformed.columns]
+        print("Aggregating transformed DataFrame...")
+        trans_agg = self.df_transformed.groupby(self.selected_string_cols)[self.selected_numeric_cols].sum().reset_index()
+        print(f"Transformed aggregation shape: {trans_agg.shape}")
 
-        df_orig_sub = self.df_original[cols_orig].copy()
-        df_trans_sub = self.df_transformed[cols_trans].copy()
-
-        # Merge on selected string columns with suffixes on numeric columns
+        print("Merging aggregated DataFrames...")
         merged = pd.merge(
-            df_orig_sub,
-            df_trans_sub,
+            orig_agg,
+            trans_agg,
             on=self.selected_string_cols,
             suffixes=('_orig', '_trans'),
             how='outer'
         )
+        print(f"Merged DataFrame shape: {merged.shape}")
 
         # Create concatenated filter key from selected string columns
         merged['_filter_key'] = merged[self.selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
-        # Aggregate sums of numeric columns grouped by _filter_key
-        agg_dict = {}
+        # Add anomaly status for each numeric column
         for col in self.selected_numeric_cols:
-            agg_dict[col + '_orig'] = 'sum'
-            agg_dict[col + '_trans'] = 'sum'
-
-        grouped = merged.groupby('_filter_key').agg(agg_dict).reset_index()
-
-        # Add anomaly status per numeric col
-        for col in self.selected_numeric_cols:
-            status_col = col + '_status'
-
-            def status_func(row):
-                o = row.get(col + '_orig')
-                t = row.get(col + '_trans')
+            status_col = f"{col}_status"
+            def anomaly_status(row):
+                o = row.get(f"{col}_orig")
+                t = row.get(f"{col}_trans")
                 if pd.isna(o) or pd.isna(t):
-                    return 'Missing'
+                    return "Missing"
                 elif abs(o - t) < 1e-9:
-                    return 'OK'
+                    return "OK"
                 else:
-                    return 'Anomaly'
+                    return "Anomaly"
+            merged[status_col] = merged.apply(anomaly_status, axis=1)
 
-            grouped[status_col] = grouped.apply(status_func, axis=1)
-
-        self.show_table(grouped)
+        self.show_table(merged)
 
     def show_table(self, df):
         self.clear_root()
@@ -163,8 +150,7 @@ class DataReconciliationApp:
         frame.pack(fill="both", expand=True)
 
         # Filter multi-select listbox
-        filter_label = tk.Label(frame, text="Filter _filter_key (multiple select):")
-        filter_label.pack(anchor="w", padx=10, pady=(10,0))
+        tk.Label(frame, text="Filter _filter_key (multiple select):").pack(anchor="w", padx=10, pady=(10,0))
 
         self.filter_listbox = tk.Listbox(frame, selectmode='multiple', height=8)
         self.filter_listbox.pack(fill='x', padx=10)
@@ -240,10 +226,10 @@ class DataReconciliationApp:
         for col in self.selected_numeric_cols:
             chart_ws = wb.create_sheet(title=f"Chart_{col}")
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            df_chart = df[['_filter_key', col+'_orig', col+'_trans']]
+            df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]]
 
             plt.figure(figsize=(8, 5))
-            df_chart.set_index('_filter_key')[[col+'_orig', col+'_trans']].plot(kind='bar')
+            df_chart.set_index('_filter_key')[[f"{col}_orig", f"{col}_trans"]].plot(kind='bar')
             plt.title(f"Original vs Transformed - {col}")
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
