@@ -119,7 +119,6 @@ class ReconciliationApp:
         self.df_transformed_full = self.clean_string_columns(self.df_transformed_full)
 
         def drop_single_unique_cols(df):
-            # Drop columns with 1 unique non-NA value only
             return df.loc[:, df.apply(lambda col: col.nunique(dropna=True) > 1)]
 
         df_orig_clean = drop_single_unique_cols(self.df_original_full)
@@ -161,8 +160,11 @@ class ReconciliationApp:
 
     def make_filter_key(self, df, cols):
         if not cols:
-            return pd.Series([""] * len(df), index=df.index)
-        return df[cols].astype(str).agg(' | '.join, axis=1)
+            return pd.Series([''] * len(df), index=df.index)
+        existing_cols = [c for c in cols if c in df.columns]
+        if not existing_cols:
+            return pd.Series([''] * len(df), index=df.index)
+        return df[existing_cols].astype(str).agg(' | '.join, axis=1)
 
     def string_col_selection_page(self, initial=False):
         self.clear_gui()
@@ -274,9 +276,9 @@ class ReconciliationApp:
                 return
             self.selected_numeric_cols = selected_numerics
 
-        # Recalculate filter key caches every time to include all selected string cols
-        self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
-        self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
+        if self._original_filter_key_cache is None:
+            self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
+            self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
 
         if self.current_filtered_keys:
             mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
@@ -287,7 +289,7 @@ class ReconciliationApp:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
-        # Assign the new filter key column as concatenation of all selected string cols
+        # Create filter_key only for current string cols selected
         self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
         self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
@@ -328,7 +330,7 @@ class ReconciliationApp:
 
         ttk.Label(frame, text="Select filter keys for drilldown (multiple selection allowed):").pack(anchor="w")
 
-        filter_keys = sorted(self.current_table_df['_filter_key'].unique())
+        filter_keys = sorted(self.current_table_df['_filter_key'].dropna().unique())
         self.current_filtered_keys = None
 
         list_frame = ttk.Frame(frame)
@@ -445,18 +447,21 @@ class ReconciliationApp:
             chart.set_categories(cats)
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
-            chart_ws.add_chart(chart, f"A{(i * 15) + 1}")
+
+            chart_ws.add_chart(chart, f"A{1 + i * 15}")
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Export Success", f"Exported sheet #{self.export_counter} to:\n{self.export_wb_path}")
+            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
+        except PermissionError:
+            messagebox.showerror("Error", "Failed to save workbook. Please close it if open and retry.")
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to save export:\n{e}")
-
+            messagebox.showerror("Error", f"Failed to save workbook:\n{e}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("1100x700")
     app = ReconciliationApp(root)
     root.mainloop()
 
