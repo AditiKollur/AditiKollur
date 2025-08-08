@@ -3,23 +3,29 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils.dataframe import dataframe_to_rows
 import tempfile
 import os
+import datetime
 
 class DataReconciliationApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Data Reconciliation Tool")
-        self.df_original = None
+        self.df_original_full = None   # store full original df (never lose data)
+        self.df_transformed_full = None
+        self.df_original = None        # filtered copies used in drill down
         self.df_transformed = None
         self.string_cols = []
         self.numeric_cols = []
         self.selected_string_cols = []
         self.selected_numeric_cols = []
         self.selected_values = []
+        self.export_wb_path = None  # Path of the export workbook (created on first export)
+        self.export_wb = None       # Loaded Workbook object for appending sheets
+        self.export_counter = 0     # To number sheets for each export
         self.init_file_selection_page()
 
     def clear_root(self):
@@ -40,22 +46,35 @@ class DataReconciliationApp:
         tk.Button(frame, text="Browse", command=self.load_transformed_file).pack(pady=(0,10))
         tk.Button(frame, text="Next", command=self.init_column_selection_page).pack(pady=20)
 
+        # Reset all state on returning to first page
+        self.df_original_full = None
+        self.df_transformed_full = None
+        self.df_original = None
+        self.df_transformed = None
+        self.export_wb_path = None
+        self.export_wb = None
+        self.export_counter = 0
+
     def load_original_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
         if file_path:
-            self.df_original = pd.read_excel(file_path)
+            self.df_original_full = pd.read_excel(file_path)
             messagebox.showinfo("Loaded", "Original file loaded successfully!")
 
     def load_transformed_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
         if file_path:
-            self.df_transformed = pd.read_excel(file_path)
+            self.df_transformed_full = pd.read_excel(file_path)
             messagebox.showinfo("Loaded", "Transformed file loaded successfully!")
 
     def init_column_selection_page(self):
-        if self.df_original is None or self.df_transformed is None:
+        if self.df_original_full is None or self.df_transformed_full is None:
             messagebox.showerror("Error", "Please load both files before proceeding.")
             return
+
+        # Reset filtered dfs to full copies on new selection page
+        self.df_original = self.df_original_full.copy()
+        self.df_transformed = self.df_transformed_full.copy()
 
         # Drop columns with only 1 unique value including NaN from both DataFrames
         df_orig_trimmed = self.drop_single_unique_columns(self.df_original)
@@ -96,7 +115,11 @@ class DataReconciliationApp:
         frame.grid_columnconfigure(2, weight=1)
         frame.grid_rowconfigure(1, weight=1)
 
-        tk.Button(frame, text="Submit", command=self.generate_table).grid(row=2, column=0, columnspan=4, pady=15)
+        btn_frame = tk.Frame(frame)
+        btn_frame.grid(row=2, column=0, columnspan=4, pady=15)
+
+        tk.Button(btn_frame, text="Submit", command=self.generate_table).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Restart Inspection", command=self.init_file_selection_page).pack(side='left', padx=5)  # Refresh button
 
     def generate_table(self):
         self.selected_string_cols = [self.string_cols[i] for i in self.string_listbox.curselection()]
@@ -107,15 +130,10 @@ class DataReconciliationApp:
             return
 
         # Aggregate original and transformed DataFrames on selected columns
-        print("Aggregating original DataFrame...")
         orig_agg = self.df_original.groupby(self.selected_string_cols)[self.selected_numeric_cols].sum().reset_index()
-        print(f"Original aggregation shape: {orig_agg.shape}")
-
-        print("Aggregating transformed DataFrame...")
         trans_agg = self.df_transformed.groupby(self.selected_string_cols)[self.selected_numeric_cols].sum().reset_index()
-        print(f"Transformed aggregation shape: {trans_agg.shape}")
 
-        print("Merging aggregated DataFrames...")
+        # Merge aggregated results
         merged = pd.merge(
             orig_agg,
             trans_agg,
@@ -123,12 +141,12 @@ class DataReconciliationApp:
             suffixes=('_orig', '_trans'),
             how='outer'
         )
-        print(f"Merged DataFrame shape: {merged.shape}")
 
-        # Create concatenated filter key from selected string columns
+        # Create concatenated filter key from selected string columns (for filtering in UI)
+        combo_name = "_".join(self.selected_string_cols)
         merged['_filter_key'] = merged[self.selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
-        # Add anomaly status for each numeric column
+        # Add anomaly status columns for each numeric measure
         for col in self.selected_numeric_cols:
             status_col = f"{col}_status"
             def anomaly_status(row):
@@ -142,9 +160,12 @@ class DataReconciliationApp:
                     return "Anomaly"
             merged[status_col] = merged.apply(anomaly_status, axis=1)
 
-        self.show_table(merged)
+        self.show_table(merged, combo_name)
 
-    def show_table(self, df):
+        # Export to Excel, appending sheets to existing workbook or creating new one
+        self.export_to_excel(merged, combo_name)
+
+    def show_table(self, df, combo_name):
         self.clear_root()
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
@@ -186,8 +207,7 @@ class DataReconciliationApp:
         btn_frame.pack(pady=10)
 
         tk.Button(btn_frame, text="Filter & Drill Down", command=lambda: self.drill_down(df)).pack(side='left', padx=10)
-        tk.Button(btn_frame, text="Export to Excel", command=lambda: self.export_to_excel(df)).pack(side='left', padx=10)
-        tk.Button(btn_frame, text="Back", command=self.init_column_selection_page).pack(side='left', padx=10)
+        tk.Button(btn_frame, text="Restart Inspection", command=self.init_file_selection_page).pack(side='left', padx=10)
 
     def drill_down(self, df):
         selected_indices = self.filter_listbox.curselection()
@@ -198,33 +218,49 @@ class DataReconciliationApp:
             filtered_df = df[df['_filter_key'].isin(selected_keys)]
 
         keys_split = filtered_df['_filter_key'].str.split(' \| ', expand=True)
-        filter_mask_orig = pd.Series(False, index=self.df_original.index)
-        filter_mask_trans = pd.Series(False, index=self.df_transformed.index)
+
+        # Filter on original full dfs (do NOT lose unfiltered data)
+        filter_mask_orig = pd.Series(False, index=self.df_original_full.index)
+        filter_mask_trans = pd.Series(False, index=self.df_transformed_full.index)
         for i, col in enumerate(self.selected_string_cols):
             vals = keys_split[i].unique()
-            filter_mask_orig |= self.df_original[col].astype(str).isin(vals)
-            filter_mask_trans |= self.df_transformed[col].astype(str).isin(vals)
+            filter_mask_orig |= self.df_original_full[col].astype(str).isin(vals)
+            filter_mask_trans |= self.df_transformed_full[col].astype(str).isin(vals)
 
-        self.df_original = self.df_original[filter_mask_orig]
-        self.df_transformed = self.df_transformed[filter_mask_trans]
+        self.df_original = self.df_original_full[filter_mask_orig].copy()
+        self.df_transformed = self.df_transformed_full[filter_mask_trans].copy()
 
         self.init_column_selection_page()
 
-    def export_to_excel(self, df):
-        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                                 filetypes=[("Excel files", "*.xlsx")])
-        if not file_path:
-            return
+    def export_to_excel(self, df, combo_name):
+        # Create filename once with timestamp if not already created
+        if self.export_wb_path is None:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"Reconcile_{timestamp}.xlsx"
+            self.export_wb_path = os.path.join(os.getcwd(), filename)
+            self.export_wb = Workbook()
+            # Remove default sheet created by openpyxl
+            default_sheet = self.export_wb.active
+            self.export_wb.remove(default_sheet)
+            self.export_counter = 1
+        else:
+            # Load existing workbook
+            self.export_wb = load_workbook(self.export_wb_path)
+            self.export_counter += 1
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Reconciliation Data"
+        # Sheet names
+        sheet_data_name = f"{combo_name}{self.export_counter}"
+        sheet_chart_name = f"{combo_name}{self.export_counter}chart"
 
+        # Add reconciliation data sheet
+        ws = self.export_wb.create_sheet(title=sheet_data_name)
         for r in dataframe_to_rows(df, index=False, header=True):
             ws.append(r)
 
+        # Add charts sheet with bar chart for each numeric column
+        chart_ws = self.export_wb.create_sheet(title=sheet_chart_name)
+
         for col in self.selected_numeric_cols:
-            chart_ws = wb.create_sheet(title=f"Chart_{col}")
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]]
 
@@ -237,15 +273,18 @@ class DataReconciliationApp:
             plt.close()
 
             img = Image(temp_file.name)
-            chart_ws.add_image(img, "A1")
+            # Find next free row for placing images vertically stacked
+            next_row = chart_ws.max_row + 2 if chart_ws.max_row > 1 else 1
+            chart_ws.add_image(img, f"A{next_row}")
             temp_file.close()
             os.unlink(temp_file.name)
 
+        # Save workbook
         try:
-            wb.save(file_path)
-            messagebox.showinfo("Success", f"Excel file saved to:\n{file_path}")
+            self.export_wb.save(self.export_wb_path)
+            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
+            messagebox.showerror("Error", f"Failed to save Excel workbook:\n{e}")
 
 if __name__ == "__main__":
     root = tk.Tk()
