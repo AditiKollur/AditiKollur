@@ -10,7 +10,8 @@ import tempfile
 import os
 import datetime
 import re
-
+from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.label import DataLabelList
 
 class DataReconciliationApp:
     def __init__(self, root):
@@ -320,18 +321,15 @@ class DataReconciliationApp:
         name = re.sub(invalid_chars, '_', name)
         return name[:31]
 
+
     def export_to_excel(self, df, combo_name):
         if not self.output_folder:
             messagebox.showerror("Export Error", "Output folder not set. Please select output folder first.")
             return
     
-        # Verify output folder still exists
         if not os.path.exists(self.output_folder):
             messagebox.showerror("Export Error", f"Output folder '{self.output_folder}' does not exist.")
             return
-    
-        safe_data_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}")
-        safe_chart_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}chart")
     
         if self.export_wb_path is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -358,48 +356,54 @@ class DataReconciliationApp:
     
         self.export_counter += 1
     
+        # Sheet names like Sheet1, Sheet2
+        sheet_name = f"Sheet{self.export_counter}"
+        chart_sheet_name = f"Chart{self.export_counter}"
+    
         # Add data sheet
-        ws = self.export_wb.create_sheet(title=safe_data_sheet)
+        ws = self.export_wb.create_sheet(title=sheet_name)
         for r in dataframe_to_rows(df, index=False, header=True):
             ws.append(r)
     
         # Add chart sheet
-        chart_ws = self.export_wb.create_sheet(title=safe_chart_sheet)
+        chart_ws = self.export_wb.create_sheet(title=chart_sheet_name)
     
-        for col in self.selected_numeric_cols:
-            # Create PNG inside output folder
-            png_path = os.path.join(self.output_folder, f"chart_{combo_name}_{col}_{self.export_counter}.png")
-            try:
-                df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]].copy()
-                df_chart.set_index('_filter_key', inplace=True)
+        # Create one bar chart per numeric column
+        for i, col in enumerate(self.selected_numeric_cols, start=2):  # start=2 to skip _filter_key column
+            # Data starts from row 2 (row 1 is header)
+            max_row = ws.max_row
     
-                plt.figure(figsize=(8, 5))
-                df_chart[[f"{col}_orig", f"{col}_trans"]].plot(kind='bar')
-                plt.title(f"Original vs Transformed - {col}")
-                plt.xticks(rotation=45, ha='right')
-                plt.tight_layout()
-                plt.savefig(png_path)
-                plt.close()
+            # Categories: _filter_key column (col 1)
+            cats = Reference(ws, min_col=1, min_row=2, max_row=max_row)
+            # Values for original and transformed columns (columns: i and i+len(numeric_cols))
+            # find original and transformed column indexes in ws by header
+            headers = [cell.value for cell in ws[1]]
+            orig_col_idx = headers.index(f"{col}_orig") + 1
+            trans_col_idx = headers.index(f"{col}_trans") + 1
     
-                img = Image(png_path)
-                next_row = chart_ws.max_row + 2 if chart_ws.max_row > 1 else 1
-                chart_ws.add_image(img, f"A{next_row}")
+            values_orig = Reference(ws, min_col=orig_col_idx, min_row=2, max_row=max_row)
+            values_trans = Reference(ws, min_col=trans_col_idx, min_row=2, max_row=max_row)
     
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed creating chart for {col}:\n{e}")
-            finally:
-                # Remove PNG after adding to Excel
-                if os.path.exists(png_path):
-                    try:
-                        os.remove(png_path)
-                    except:
-                        pass
+            chart = BarChart()
+            chart.title = f"Original vs Transformed - {col}"
+            chart.y_axis.title = col
+            chart.x_axis.title = "Keys"
+    
+            chart.add_data(values_orig, titles_from_data=False, title="Original")
+            chart.add_data(values_trans, titles_from_data=False, title="Transformed")
+            chart.set_categories(cats)
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+    
+            # Position charts vertically spaced on chart_ws
+            cell_pos = f"A{(i-2)*15 + 1}"
+            chart_ws.add_chart(chart, cell_pos)
     
         try:
             self.export_wb.save(self.export_wb_path)
             messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
         except PermissionError:
-            messagebox.showerror("Error", f"Failed to save workbook because it is open or locked.\nPlease close it and try again.")
+            messagebox.showerror("Error", "Failed to save workbook because it is open or locked.\nPlease close it and try again.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save Excel workbook:\n{e}")
 
