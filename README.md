@@ -16,25 +16,20 @@ class ReconciliationApp:
         self.root = root
         self.root.title("Data Reconciliation")
 
-        # DataFrames full original and transformed (loaded once)
         self.df_original_full = None
         self.df_transformed_full = None
 
-        # Filtered working dfs for drill down steps
         self.df_original = None
         self.df_transformed = None
 
-        # Selected string and numeric columns so far (for _filter_key)
         self.all_selected_string_cols = []
         self.selected_numeric_cols = []
 
-        # For export
         self.output_folder = None
         self.export_wb_path = None
         self.export_wb = None
         self.export_counter = 0
 
-        # Cache _filter_key for full dataframes to speed filtering
         self._original_filter_key_cache = None
         self._transformed_filter_key_cache = None
 
@@ -46,7 +41,6 @@ class ReconciliationApp:
         self.current_table_df = None
         self.current_filtered_keys = None
 
-        # Start from file selection screen
         self.file_select_screen()
 
     def clear_gui(self):
@@ -58,7 +52,6 @@ class ReconciliationApp:
         frame = ttk.Frame(self.root, padding=10)
         frame.pack(fill="both", expand=True)
 
-        # Use grid for neat layout
         ttk.Label(frame, text="Select Original Data File (Excel):").grid(row=0, column=0, sticky="w")
         self.orig_path_var = tk.StringVar()
         ttk.Entry(frame, textvariable=self.orig_path_var, width=60).grid(row=0, column=1, sticky="ew", padx=5)
@@ -115,21 +108,17 @@ class ReconciliationApp:
             messagebox.showerror("Error", f"Failed to load Excel files:\n{e}")
             return
 
-        # Drop columns with only 1 unique value or all NA from both dfs before finding common columns
         def drop_single_unique_cols(df):
             return df.loc[:, df.apply(lambda col: col.nunique(dropna=True) > 1)]
 
         df_orig_clean = drop_single_unique_cols(self.df_original_full)
         df_trans_clean = drop_single_unique_cols(self.df_transformed_full)
 
-        # Find common columns
         common_cols = list(set(df_orig_clean.columns).intersection(set(df_trans_clean.columns)))
 
-        # From common columns, find string and numeric columns
         df_orig_common = self.df_original_full[common_cols]
         df_trans_common = self.df_transformed_full[common_cols]
 
-        # Identify string columns as object dtype, numeric columns by pandas API
         string_cols = [col for col in common_cols if df_orig_common[col].dtype == 'object']
         numeric_cols = [col for col in common_cols if pd.api.types.is_numeric_dtype(df_orig_common[col])]
 
@@ -143,7 +132,6 @@ class ReconciliationApp:
         self.string_cols_available = string_cols
         self.numeric_cols_available = numeric_cols
 
-        # Reset selections and caches
         self.all_selected_string_cols = []
         self.selected_numeric_cols = []
         self.export_counter = 0
@@ -155,11 +143,9 @@ class ReconciliationApp:
         self.current_filtered_keys = None
         self.current_table_df = None
 
-        # Set working dfs initially full
         self.df_original = self.df_original_full.copy()
         self.df_transformed = self.df_transformed_full.copy()
 
-        # Start with string selection (for first time)
         self.string_col_selection_page(initial=True)
 
     def string_col_selection_page(self, initial=False):
@@ -173,7 +159,6 @@ class ReconciliationApp:
 
         ttk.Label(frame, text=title_text).pack(anchor="w")
 
-        # Filter out already selected string cols so user doesn't re-select same ones
         available = [c for c in self.string_cols_available if c not in self.all_selected_string_cols]
         if not available:
             messagebox.showinfo("No More Strings", "No more string columns left to select for drill down.\nProceeding to export and inspection.")
@@ -220,16 +205,13 @@ class ReconciliationApp:
             messagebox.showerror("Selection Error", "Select at least one string column.")
             return
 
-        # Add to all_selected_string_cols but avoid duplicates
         for col in selected_strings:
             if col not in self.all_selected_string_cols:
                 self.all_selected_string_cols.append(col)
 
         if initial:
-            # After first string selection, go to numeric selection page
             self.numeric_col_selection_page()
         else:
-            # Drilldown step: generate new table with new string columns added
             self.generate_table()
 
     def numeric_col_selection_page(self):
@@ -270,19 +252,16 @@ class ReconciliationApp:
 
     def generate_table(self):
         if not self.selected_numeric_cols:
-            # First time numeric selection
             selected_numerics = [col for col, var in self.current_numeric_selection_vars if var.get()]
             if not selected_numerics:
                 messagebox.showerror("Selection Error", "Select at least one numeric column.")
                 return
             self.selected_numeric_cols = selected_numerics
 
-        # Prepare caches if not already
         if self._original_filter_key_cache is None:
             self._original_filter_key_cache = self.df_original_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
             self._transformed_filter_key_cache = self.df_transformed_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
-        # Filter full dfs by current filtered keys if any (drilldown)
         if self.current_filtered_keys:
             mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
             mask_trans = self._transformed_filter_key_cache.isin(self.current_filtered_keys)
@@ -292,19 +271,17 @@ class ReconciliationApp:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
-        # Generate _filter_key based on all selected string columns so far
         self.df_original['_filter_key'] = self.df_original[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
         self.df_transformed['_filter_key'] = self.df_transformed[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
-        # Group by _filter_key and sum numeric cols
-        group_cols = ['_filter_key']
+        group_cols = self.all_selected_string_cols
         orig_grouped = self.df_original.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
         trans_grouped = self.df_transformed.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
 
-        # Merge on _filter_key
-        merged = pd.merge(orig_grouped, trans_grouped, on='_filter_key', how='outer', suffixes=('_orig', '_trans'))
+        merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
 
-        # Round to 1 decimal and check anomaly status
+        merged['_filter_key'] = merged[group_cols].astype(str).agg(' | '.join, axis=1)
+
         for col in self.selected_numeric_cols:
             col_orig = f"{col}_orig"
             col_trans = f"{col}_trans"
@@ -352,30 +329,31 @@ class ReconciliationApp:
         scrollbar_vert.config(command=self.current_filter_listbox.yview)
         scrollbar_horz.config(command=self.current_filter_listbox.xview)
 
-        self.current_filter_listbox.grid(row=0, column=0, sticky='nsew')
-        scrollbar_vert.grid(row=0, column=1, sticky='ns')
-        scrollbar_horz.grid(row=1, column=0, sticky='ew')
+        self.current_filter_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar_vert.pack(side="right", fill="y")
+        scrollbar_horz.pack(side="bottom", fill="x")
 
-        list_frame.rowconfigure(0, weight=1)
-        list_frame.columnconfigure(0, weight=1)
+        # Table frame
+        table_frame = ttk.Frame(self.root)
+        table_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-        table_frame = ttk.Frame(frame)
-        table_frame.pack(fill="both", expand=True, pady=10)
-
-        columns = list(self.current_table_df.columns)
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings")
+        tree = ttk.Treeview(table_frame, show="headings")
         tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        vsb.pack(side="right", fill="y")
         hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
-        hsb.pack(side="bottom", fill="x")
 
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, anchor="w", width=110)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+
+        cols = list(self.current_table_df.columns)
+        tree["columns"] = cols
+
+        for c in cols:
+            tree.heading(c, text=c)
+            tree.column(c, width=120, anchor='w')
 
         for _, row in self.current_table_df.iterrows():
             tree.insert("", "end", values=list(row))
@@ -383,34 +361,20 @@ class ReconciliationApp:
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
 
-        ttk.Button(btn_frame, text="Drill Down Next Step", command=self.drill_down).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Start Over (File Select)", command=self.file_select_screen).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Drill Down Next", command=self.drill_down_next).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Export Current Table", command=self.export_current_table).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Start Over (File Selection)", command=self.file_select_screen).pack(side="left", padx=5)
 
-    def drill_down(self):
-        if not self.current_filter_listbox:
-            messagebox.showerror("Error", "No filter keys listbox available.")
-            return
-        selected_indices = self.current_filter_listbox.curselection()
-        if selected_indices:
-            selected_keys = [self.current_filter_listbox.get(i) for i in selected_indices]
-            self.current_filtered_keys = selected_keys
+    def drill_down_next(self):
+        if self.current_filter_listbox:
+            selected = [self.current_filter_listbox.get(i) for i in self.current_filter_listbox.curselection()]
+            if selected:
+                self.current_filtered_keys = selected
+            else:
+                self.current_filtered_keys = None
         else:
-            # If none selected, use all keys
-            self.current_filtered_keys = sorted(self.current_table_df['_filter_key'].unique())
+            self.current_filtered_keys = None
 
-        # Filter full dfs by _filter_key matching selected keys
-        if self._original_filter_key_cache is None:
-            self._original_filter_key_cache = self.df_original_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
-            self._transformed_filter_key_cache = self.df_transformed_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
-
-        mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
-        mask_trans = self._transformed_filter_key_cache.isin(self.current_filtered_keys)
-
-        self.df_original = self.df_original_full[mask_orig].copy()
-        self.df_transformed = self.df_transformed_full[mask_trans].copy()
-
-        # Ask for next string columns for drill down (if any left)
         self.string_col_selection_page(initial=False)
 
     def export_current_table(self):
@@ -418,13 +382,11 @@ class ReconciliationApp:
             messagebox.showerror("Error", "No table to export.")
             return
 
-        # Initialize workbook if first export
         if self.export_wb is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"Reconcile_{timestamp}.xlsx"
             self.export_wb_path = os.path.join(self.output_folder, fname)
             self.export_wb = Workbook()
-            # Remove default sheet
             default_sheet = self.export_wb.active
             self.export_wb.remove(default_sheet)
             self.export_counter = 1
@@ -436,18 +398,14 @@ class ReconciliationApp:
 
         ws = self.export_wb.create_sheet(title=sheet_name)
 
-        # Write data frame to worksheet
         for r in dataframe_to_rows(self.current_table_df, index=False, header=True):
             ws.append(r)
 
-        # Add bar chart sheet
         chart_ws = self.export_wb.create_sheet(title=chart_sheet_name)
 
-        # Create bar chart per numeric col
         for i, col in enumerate(self.selected_numeric_cols):
             col_orig = f"{col}_orig"
             col_trans = f"{col}_trans"
-
             max_row = ws.max_row
             cats = Reference(ws, min_col=1, min_row=2, max_row=max_row)
 
@@ -484,8 +442,9 @@ class ReconciliationApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("900x700")
+    root.geometry("1000x700")
     app = ReconciliationApp(root)
     root.mainloop()
 
 ```
+
