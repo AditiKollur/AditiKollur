@@ -1,3 +1,4 @@
+
 ```python
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -286,6 +287,7 @@ class ReconciliationApp:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
+        # Always assign _filter_key as a single concatenated string column
         self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
         self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
@@ -295,6 +297,7 @@ class ReconciliationApp:
 
         merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
 
+        # Assign _filter_key to merged DataFrame correctly
         merged['_filter_key'] = self.make_filter_key(merged, self.all_selected_string_cols)
 
         for col in self.selected_numeric_cols:
@@ -441,6 +444,7 @@ class ReconciliationApp:
             chart.add_data(values_orig, titles_from_data=False, title="Original")
             chart.add_data(values_trans, titles_from_data=False, title="Transformed")
             chart.set_categories(cats)
+
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
 
