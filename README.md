@@ -289,7 +289,6 @@ class ReconciliationApp:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
-        # Create filter_key only for current string cols selected
         self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
         self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
@@ -367,15 +366,26 @@ class ReconciliationApp:
         vsb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
 
-        cols = list(self.current_table_df.columns)
+        # Prepare columns, exclude '_filter_key' from display
+        cols = [c for c in self.current_table_df.columns if c != '_filter_key']
         tree["columns"] = cols
 
+        # Dynamically adjust width based on content
         for c in cols:
+            # Compute max length of content in the column + length of column name
+            max_content_len = max(
+                self.current_table_df[c].astype(str).map(len).max(),
+                len(c)
+            )
+            # Set width: roughly 8 pixels per character + 20 padding, capped min 80 max 300
+            width = min(max(80, max_content_len * 8 + 20), 300)
             tree.heading(c, text=c)
-            tree.column(c, width=120, anchor='w')
+            tree.column(c, width=width, anchor='w')
 
+        # Insert data rows
         for _, row in self.current_table_df.iterrows():
-            tree.insert("", "end", values=list(row))
+            values = [row[c] for c in cols]
+            tree.insert("", "end", values=values)
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
@@ -431,38 +441,40 @@ class ReconciliationApp:
             try:
                 idx_orig = list(self.current_table_df.columns).index(col_orig) + 1
                 idx_trans = list(self.current_table_df.columns).index(col_trans) + 1
-            except ValueError:
+            except Exception:
                 continue
 
-            values_orig = Reference(ws, min_col=idx_orig, min_row=2, max_row=max_row)
-            values_trans = Reference(ws, min_col=idx_trans, min_row=2, max_row=max_row)
+            data_orig = Reference(ws, min_col=idx_orig, min_row=1, max_row=max_row)
+            data_trans = Reference(ws, min_col=idx_trans, min_row=1, max_row=max_row)
 
             chart = BarChart()
-            chart.title = f"Original vs Transformed - {col}"
-            chart.y_axis.title = col
-            chart.x_axis.title = "Filter Keys"
-
-            chart.add_data(values_orig, titles_from_data=False, title="Original")
-            chart.add_data(values_trans, titles_from_data=False, title="Transformed")
+            chart.title = f"Reconciliation {col}"
+            chart.add_data(data_orig, titles_from_data=True)
+            chart.add_data(data_trans, titles_from_data=True)
             chart.set_categories(cats)
+            chart.y_axis.title = 'Amount'
+            chart.x_axis.title = 'Keys'
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
 
-            chart_ws.add_chart(chart, f"A{1 + i * 15}")
+            chart_ws.add_chart(chart, f"A{1 + 15 * (i)}")
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
-        except PermissionError:
-            messagebox.showerror("Error", "Failed to save workbook. Please close it if open and retry.")
+            messagebox.showinfo("Export Success", f"Exported to {self.export_wb_path}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save workbook:\n{e}")
+            messagebox.showerror("Export Error", f"Failed to save export file:\n{e}")
+
+
+
+def main():
+    root = tk.Tk()
+    app = ReconciliationApp(root)
+    root.geometry("1000x700")
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.geometry("1100x700")
-    app = ReconciliationApp(root)
-    root.mainloop()
+    main()
 
 ```
