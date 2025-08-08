@@ -30,12 +30,13 @@ class ReconciliationApp:
         self.export_wb = None
         self.export_counter = 0
 
-        self.current_filtered_keys = None
-        self.current_table_df = None
-
         self.current_string_selection_vars = []
         self.current_numeric_selection_vars = []
+
         self.current_filter_listbox = None
+
+        self.current_table_df = None
+        self.current_filtered_keys = None
 
         self.file_select_screen()
 
@@ -144,7 +145,6 @@ class ReconciliationApp:
         self.export_wb_path = None
         self.export_wb = None
         self.output_folder = output_folder
-
         self.current_filtered_keys = None
         self.current_table_df = None
 
@@ -154,13 +154,13 @@ class ReconciliationApp:
         self.string_col_selection_page(initial=True)
 
     def make_filter_key(self, df, cols):
-        # Only use columns that exist in df
         existing_cols = [c for c in cols if c in df.columns]
         if not existing_cols:
             return pd.Series([''] * len(df), index=df.index)
-        # Concatenate string values with ' | '
-        # Return a Series (not DataFrame)
-        return df[existing_cols].astype(str).agg(' | '.join, axis=1)
+        sliced = df[existing_cols].astype(str)
+        if isinstance(sliced, pd.Series):
+            return sliced
+        return sliced.agg(' | '.join, axis=1)
 
     def string_col_selection_page(self, initial=False):
         self.clear_gui()
@@ -272,21 +272,17 @@ class ReconciliationApp:
                 return
             self.selected_numeric_cols = selected_numerics
 
-        # Reset caches on each generate_table call to avoid stale columns
-        self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
-        self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
-
+        # When filtering dfs, use full dfs and filter on _filter_key generated from all_selected_string_cols
         if self.current_filtered_keys:
-            mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
-            mask_trans = self._transformed_filter_key_cache.isin(self.current_filtered_keys)
-            # Use filtered full dfs to retain all columns needed for filter keys on next drill down
+            mask_orig = self.make_filter_key(self.df_original_full, self.all_selected_string_cols).isin(self.current_filtered_keys)
+            mask_trans = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols).isin(self.current_filtered_keys)
             self.df_original = self.df_original_full.loc[mask_orig].copy()
             self.df_transformed = self.df_transformed_full.loc[mask_trans].copy()
         else:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
-        # Create _filter_key anew for current dfs
+        # Assign _filter_key safely as Series
         self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
         self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
@@ -365,24 +361,18 @@ class ReconciliationApp:
         hsb.pack(side="bottom", fill="x")
 
         cols = list(self.current_table_df.columns)
-
-        # Hide _filter_key column in display
+        # Hide _filter_key column from display
         if '_filter_key' in cols:
-            cols_display = [c for c in cols if c != '_filter_key']
-        else:
-            cols_display = cols
+            cols.remove('_filter_key')
+        tree["columns"] = cols
 
-        tree["columns"] = cols_display
-
-        for c in cols_display:
+        for c in cols:
             tree.heading(c, text=c)
-            max_len = max(self.current_table_df[c].astype(str).map(len).max(), len(c))
-            width = min(max(80, max_len * 10), 200)
-            tree.column(c, width=width, anchor='w')
+            tree.column(c, width=120, anchor='w')
 
         for _, row in self.current_table_df.iterrows():
-            vals = [row[c] for c in cols_display]
-            tree.insert("", "end", values=vals)
+            values = [row[c] for c in cols]
+            tree.insert("", "end", values=values)
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
@@ -455,21 +445,20 @@ class ReconciliationApp:
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
 
-            chart_ws.add_chart(chart, f"A{1 + i * 15}")
+            chart_ws.add_chart(chart, f"A{1 + 15*i}")
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
-        except PermissionError:
-            messagebox.showerror("Error", "Failed to save workbook. Please close it if open and retry.")
+            messagebox.showinfo("Exported", f"Exported table and charts to:\n{self.export_wb_path}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save workbook:\n{e}")
+            messagebox.showerror("Export Error", f"Failed to save Excel file:\n{e}")
+
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1100x700")
     app = ReconciliationApp(root)
+    root.geometry("950x650")
     root.mainloop()
 
 ```
