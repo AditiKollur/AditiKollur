@@ -27,7 +27,7 @@ class DataReconciliationApp:
             widget.destroy()
 
     def drop_single_unique_columns(self, df):
-        # Drops columns that have only 1 unique value including NaN (dropna=False)
+        # Drops columns with only 1 unique value including NaN (dropna=False)
         return df.loc[:, df.nunique(dropna=False) > 1]
 
     def init_file_selection_page(self):
@@ -108,18 +108,30 @@ class DataReconciliationApp:
             messagebox.showerror("Error", "Please select at least one string and one numeric column.")
             return
 
-        # Merge original and transformed on selected string columns with outer join
+        # Subset columns to selected keys + numeric cols
+        cols_orig = self.selected_string_cols + self.selected_numeric_cols
+        cols_trans = self.selected_string_cols + self.selected_numeric_cols
+
+        # Keep only columns that exist in each df (to avoid KeyError)
+        cols_orig = [c for c in cols_orig if c in self.df_original.columns]
+        cols_trans = [c for c in cols_trans if c in self.df_transformed.columns]
+
+        df_orig_sub = self.df_original[cols_orig].copy()
+        df_trans_sub = self.df_transformed[cols_trans].copy()
+
+        # Merge on selected string columns with suffixes on numeric columns
         merged = pd.merge(
-            self.df_original, self.df_transformed,
+            df_orig_sub,
+            df_trans_sub,
             on=self.selected_string_cols,
             suffixes=('_orig', '_trans'),
             how='outer'
         )
 
-        # Create concatenated filter key from string columns
+        # Create concatenated filter key from selected string columns
         merged['_filter_key'] = merged[self.selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
-        # Aggregate numeric columns sums per filter_key
+        # Aggregate sums of numeric columns grouped by _filter_key
         agg_dict = {}
         for col in self.selected_numeric_cols:
             agg_dict[col + '_orig'] = 'sum'
@@ -127,7 +139,7 @@ class DataReconciliationApp:
 
         grouped = merged.groupby('_filter_key').agg(agg_dict).reset_index()
 
-        # Add anomaly status columns per numeric col
+        # Add anomaly status per numeric col
         for col in self.selected_numeric_cols:
             status_col = col + '_status'
 
@@ -150,7 +162,7 @@ class DataReconciliationApp:
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
 
-        # Filter dropdown multi-select
+        # Filter multi-select listbox
         filter_label = tk.Label(frame, text="Filter _filter_key (multiple select):")
         filter_label.pack(anchor="w", padx=10, pady=(10,0))
 
