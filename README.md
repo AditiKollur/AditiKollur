@@ -1,4 +1,3 @@
-```python
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import pandas as pd
@@ -19,15 +18,17 @@ class ReconciliationApp:
         self.df_original_full = None
         self.df_transformed_full = None
 
-        self.all_selected_string_cols = []  # All string cols selected so far
-        self.selected_numeric_cols = []     # Numeric cols selected once
+        # History of drilldown string columns selected per step (list of list of cols)
+        self.drilldown_history = []
+        # History of filter keys selected per drilldown step (list of list of filter keys)
+        self.filter_keys_history = []
+
+        self.selected_numeric_cols = []  # Numeric cols selected once
 
         self.output_folder = None
         self.export_wb_path = None
         self.export_wb = None
         self.export_counter = 0
-
-        self.current_filtered_keys = None  # Selected filter keys on previously selected string columns
 
         self.current_string_selection_vars = []
         self.current_numeric_selection_vars = []
@@ -135,14 +136,13 @@ class ReconciliationApp:
         self.string_cols_available = string_cols
         self.numeric_cols_available = numeric_cols
 
-        self.all_selected_string_cols = []
+        self.drilldown_history = []
+        self.filter_keys_history = []
         self.selected_numeric_cols = []
         self.export_counter = 0
         self.export_wb_path = None
         self.export_wb = None
         self.output_folder = output_folder
-        self.current_filtered_keys = None
-        self.current_table_df = None
 
         self.string_col_selection_page(initial=True)
 
@@ -164,7 +164,8 @@ class ReconciliationApp:
         ttk.Label(frame, text=title_text).pack(anchor="w")
 
         # For drilldown, show only columns NOT already selected
-        available = [c for c in self.string_cols_available if c not in self.all_selected_string_cols]
+        selected_so_far = [col for step in self.drilldown_history for col in step]
+        available = [c for c in self.string_cols_available if c not in selected_so_far]
         if not available:
             messagebox.showinfo("No More Strings", "No more string columns left to select for drill down.\nProceeding to export and inspection.")
             self.show_table_with_filters()
@@ -210,10 +211,8 @@ class ReconciliationApp:
             messagebox.showerror("Selection Error", "Select at least one string column.")
             return
 
-        # Add newly selected string cols to all_selected_string_cols
-        for col in selected_strings:
-            if col not in self.all_selected_string_cols:
-                self.all_selected_string_cols.append(col)
+        # Append selected columns for this drilldown step
+        self.drilldown_history.append(selected_strings)
 
         if initial:
             self.numeric_col_selection_page()
@@ -265,37 +264,47 @@ class ReconciliationApp:
                 return
             self.selected_numeric_cols = selected_numerics
 
-        # Filter original dataframes by previously selected keys on the string columns that were selected BEFORE current drilldown
-        prev_string_cols = self.all_selected_string_cols[:-len(self.current_filtered_keys) if self.current_filtered_keys else 0]
+        # All string cols selected so far across drilldowns
+        all_selected_string_cols = [col for step in self.drilldown_history for col in step]
 
-        if self.current_filtered_keys and prev_string_cols:
-            # Filter both dataframes by previously selected keys on prev_string_cols
+        # Determine previous drilldown step cols (all except last step)
+        if len(self.drilldown_history) > 1:
+            prev_string_cols = [col for step in self.drilldown_history[:-1] for col in step]
+            prev_filter_keys = self.filter_keys_history[-1] if self.filter_keys_history else None
+        else:
+            prev_string_cols = []
+            prev_filter_keys = None
+
+        if prev_filter_keys and prev_string_cols:
             key_col_orig = self.concat_filter_key(self.df_original_full, prev_string_cols)
             key_col_trans = self.concat_filter_key(self.df_transformed_full, prev_string_cols)
 
-            mask_orig = key_col_orig.isin(self.current_filtered_keys)
-            mask_trans = key_col_trans.isin(self.current_filtered_keys)
+            mask_orig = key_col_orig.isin(prev_filter_keys)
+            mask_trans = key_col_trans.isin(prev_filter_keys)
 
             df_orig_filtered = self.df_original_full.loc[mask_orig].copy()
             df_trans_filtered = self.df_transformed_full.loc[mask_trans].copy()
         else:
-            # No filtering if no previous filter keys selected
             df_orig_filtered = self.df_original_full.copy()
             df_trans_filtered = self.df_transformed_full.copy()
 
-        # Now group on all selected string cols (including newly selected ones)
-        df_orig_filtered['_filter_key'] = self.concat_filter_key(df_orig_filtered, self.all_selected_string_cols)
-        df_trans_filtered['_filter_key'] = self.concat_filter_key(df_trans_filtered, self.all_selected_string_cols)
+        df_orig_filtered['_filter_key'] = self.concat_filter_key(df_orig_filtered, all_selected_string_cols)
+        df_trans_filtered['_filter_key'] = self.concat_filter_key(df_trans_filtered, all_selected_string_cols)
 
-        group_cols = self.all_selected_string_cols
+        group_cols = all_selected_string_cols
 
         orig_grouped = df_orig_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
         trans_grouped = df_trans_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
 
         merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
-        merged['_filter_key'] = self.concat_filter_key(merged, self.all_selected_string_cols)
+        merged['_filter_key'] = self.concat_filter_key(merged, all_selected_string_cols)
 
-        # Calculate anomaly status columns for each numeric col
+        if merged.empty:
+            messagebox.showwarning("No Data", "No matching data found for the selected filters.")
+            self.current_table_df = pd.DataFrame()
+            self.show_table_with_filters()
+            return
+
         for col in self.selected_numeric_cols:
             col_orig = f"{col}_orig"
             col_trans = f"{col}_trans"
@@ -317,9 +326,6 @@ class ReconciliationApp:
 
         self.current_table_df = merged.copy()
 
-        # Reset filter selections for this new table
-        self.current_filtered_keys = None
-
         self.show_table_with_filters()
 
     def show_table_with_filters(self):
@@ -329,7 +335,7 @@ class ReconciliationApp:
 
         ttk.Label(frame, text="Select filter keys for drilldown (multiple selection allowed):").pack(anchor="w")
 
-        filter_keys = sorted(self.current_table_df['_filter_key'].dropna().unique())
+        filter_keys = sorted(self.current_table_df['_filter_key'].dropna().unique()) if self.current_table_df is not None else []
 
         self.current_filter_listbox = tk.Listbox(frame, selectmode='extended', height=8)
         for key in filter_keys:
@@ -351,17 +357,18 @@ class ReconciliationApp:
         vsb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
 
-        cols = list(self.current_table_df.columns)
-        visible_cols = [c for c in cols if c != '_filter_key']
-        tree["columns"] = visible_cols
+        if self.current_table_df is not None:
+            cols = list(self.current_table_df.columns)
+            visible_cols = [c for c in cols if c != '_filter_key']
+            tree["columns"] = visible_cols
 
-        for c in visible_cols:
-            tree.heading(c, text=c)
-            tree.column(c, width=120, anchor='w')
+            for c in visible_cols:
+                tree.heading(c, text=c)
+                tree.column(c, width=120, anchor='w')
 
-        for _, row in self.current_table_df.iterrows():
-            values = [row[c] for c in visible_cols]
-            tree.insert("", "end", values=values)
+            for _, row in self.current_table_df.iterrows():
+                values = [row[c] for c in visible_cols]
+                tree.insert("", "end", values=values)
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
@@ -374,11 +381,11 @@ class ReconciliationApp:
         if self.current_filter_listbox:
             selected = [self.current_filter_listbox.get(i) for i in self.current_filter_listbox.curselection()]
             if selected:
-                self.current_filtered_keys = selected
+                self.filter_keys_history.append(selected)
             else:
-                self.current_filtered_keys = None
+                self.filter_keys_history.append(None)
         else:
-            self.current_filtered_keys = None
+            self.filter_keys_history.append(None)
 
         self.string_col_selection_page(initial=False)
 
@@ -411,7 +418,6 @@ class ReconciliationApp:
         # Example: create bar chart of first numeric col sums
         if self.selected_numeric_cols:
             num_col = self.selected_numeric_cols[0]
-            # Sum orig and trans columns for chart
             orig_col = f"{num_col}_orig"
             trans_col = f"{num_col}_trans"
             if orig_col in self.current_table_df.columns and trans_col in self.current_table_df.columns:
@@ -424,19 +430,17 @@ class ReconciliationApp:
                 chart.legend.position = "r"
                 chart.dataLabels = DataLabelList()
                 chart.dataLabels.showVal = True
+
                 chart_ws.add_chart(chart, "A1")
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Export Successful", f"Exported sheet '{sheet_name}' to:\n{self.export_wb_path}")
+            messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1100x700")
     app = ReconciliationApp(root)
     root.mainloop()
-
-```
