@@ -1,190 +1,165 @@
-import tkinter as tk
-from tkinter import ttk, filedialog
+```python
+import streamlit as st
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.chart import BarChart, Reference
-from openpyxl.utils.dataframe import dataframe_to_rows
+import io
+import xlsxwriter
 
-
-class ReconciliationApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Data Reconciliation Tool")
-        self.df_original = None
-        self.df_transformed = None
+class DataReconciliationApp:
+    def __init__(self):
+        self.df1 = None
+        self.df2 = None
         self.selected_values = None
+        self.first_selected_columns = []
         self.remaining_columns = []
-        self.numeric_columns = []
-        self.string_columns = []
-        self.selected_string_columns = []
+        self.numeric_column = None
 
-        self.page1()
+    def load_data(self):
+        uploaded_file1 = st.file_uploader("Upload Original Data (CSV or Excel)", type=["csv", "xlsx"], key="file1")
+        uploaded_file2 = st.file_uploader("Upload Transformed Data (CSV or Excel)", type=["csv", "xlsx"], key="file2")
 
-    def page1(self):
-        for widget in self.root.winfo_children():
-            widget.destroy()
+        if uploaded_file1 and uploaded_file2:
+            if uploaded_file1.name.endswith('.csv'):
+                self.df1 = pd.read_csv(uploaded_file1)
+            else:
+                self.df1 = pd.read_excel(uploaded_file1)
 
-        frame = tk.Frame(self.root)
-        frame.pack(fill="both", expand=True)
+            if uploaded_file2.name.endswith('.csv'):
+                self.df2 = pd.read_csv(uploaded_file2)
+            else:
+                self.df2 = pd.read_excel(uploaded_file2)
 
-        tk.Button(frame, text="Load Original File", command=self.load_original).pack(pady=5)
-        tk.Button(frame, text="Load Transformed File", command=self.load_transformed).pack(pady=5)
-        tk.Button(frame, text="Next", command=self.page2).pack(pady=20)
+            st.success("Files loaded successfully!")
 
-    def load_original(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if file_path:
-            self.df_original = pd.read_excel(file_path)
+    def select_first_columns(self):
+        if self.df1 is not None and self.df2 is not None:
+            string_columns = [col for col in self.df1.columns if self.df1[col].dtype == 'object']
+            with st.container():
+                st.markdown(
+                    "<div style='overflow-x:auto; overflow-y:auto; max-height:400px;'>",
+                    unsafe_allow_html=True
+                )
+                self.first_selected_columns = st.multiselect(
+                    "Select first set of string columns for grouping",
+                    string_columns
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    def load_transformed(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if file_path:
-            self.df_transformed = pd.read_excel(file_path)
+            if st.button("Submit First Selection"):
+                self.generate_first_table()
 
-    def page2(self):
-        if self.df_original is None or self.df_transformed is None:
+    def generate_first_table(self):
+        df1 = self.df1.copy()
+        df2 = self.df2.copy()
+
+        if not self.first_selected_columns:
+            st.warning("Please select at least one column.")
             return
 
-        for widget in self.root.winfo_children():
-            widget.destroy()
+        df1["_filter_key"] = df1[self.first_selected_columns].astype(str).agg('_'.join, axis=1)
+        df2["_filter_key"] = df2[self.first_selected_columns].astype(str).agg('_'.join, axis=1)
 
-        frame = tk.Frame(self.root)
-        frame.pack(fill="both", expand=True)
+        numeric_cols = [col for col in df1.columns if pd.api.types.is_numeric_dtype(df1[col])]
+        if numeric_cols:
+            self.numeric_column = numeric_cols[0]
 
-        self.string_columns = [col for col in self.df_original.columns if self.df_original[col].dtype == object]
-        self.numeric_columns = [col for col in self.df_original.columns if pd.api.types.is_numeric_dtype(self.df_original[col])]
+        grouped1 = df1.groupby("_filter_key")[self.numeric_column].sum().reset_index()
+        grouped2 = df2.groupby("_filter_key")[self.numeric_column].sum().reset_index()
 
-        tk.Label(frame, text="Select String Columns:").pack()
+        merged = grouped1.merge(grouped2, on="_filter_key", suffixes=("_original", "_transformed"), how="outer").fillna(0)
+        merged["status"] = merged.apply(lambda row: "OK" if row[f"{self.numeric_column}_original"] == row[f"{self.numeric_column}_transformed"]
+                                        else ("Missing" if row[f"{self.numeric_column}_transformed"] == 0 else "Anomaly"), axis=1)
 
-        list_frame = tk.Frame(frame)
-        list_frame.pack(fill="both", expand=True)
+        st.dataframe(merged, use_container_width=True)
 
-        scrollbar_y = tk.Scrollbar(list_frame, orient="vertical")
-        scrollbar_x = tk.Scrollbar(list_frame, orient="horizontal")
-        self.listbox = tk.Listbox(list_frame, selectmode="multiple", yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-        scrollbar_y.config(command=self.listbox.yview)
-        scrollbar_x.config(command=self.listbox.xview)
+        self.remaining_columns = [col for col in df1.columns if col not in self.first_selected_columns and df1[col].dtype == 'object']
+        self.selected_values = st.multiselect("Filter by key", merged["_filter_key"].unique())
 
-        for col in self.string_columns:
-            self.listbox.insert(tk.END, col)
+        if st.button("Next Drill Down"):
+            self.generate_second_page()
 
-        self.listbox.grid(row=0, column=0, sticky="nsew")
-        scrollbar_y.grid(row=0, column=1, sticky="ns")
-        scrollbar_x.grid(row=1, column=0, sticky="ew")
+        if st.button("Export to Excel"):
+            self.export_to_excel(merged)
 
-        list_frame.grid_rowconfigure(0, weight=1)
-        list_frame.grid_columnconfigure(0, weight=1)
+    def generate_second_page(self):
+        df1 = self.df1.copy()
+        df2 = self.df2.copy()
 
-        tk.Button(frame, text="Submit", command=self.generate_table_page).pack(pady=10)
+        # NEW: Safe filtering
+        if "_filter_key" in df1.columns and self.selected_values:
+            df1 = df1[df1["_filter_key"].isin(self.selected_values)]
+            df2 = df2[df2["_filter_key"].isin(self.selected_values)]
 
-    def generate_table_page(self):
-        selected_indices = self.listbox.curselection()
-        self.selected_string_columns = [self.string_columns[i] for i in selected_indices]
-        self.remaining_columns = [col for col in self.string_columns if col not in self.selected_string_columns]
+        with st.container():
+            st.markdown(
+                "<div style='overflow-x:auto; overflow-y:auto; max-height:400px;'>",
+                unsafe_allow_html=True
+            )
+            second_selection = st.multiselect(
+                "Select remaining string columns for second grouping",
+                self.remaining_columns
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        df1 = self.df_original.copy()
-        df2 = self.df_transformed.copy()
+        if st.button("Submit Second Selection"):
+            if not second_selection:
+                st.warning("Please select at least one column.")
+                return
 
-        key_col = "_filter_key"
-        df1[key_col] = df1[self.selected_string_columns].astype(str).agg(' | '.join, axis=1)
-        df2[key_col] = df2[self.selected_string_columns].astype(str).agg(' | '.join, axis=1)
+            combined_selection = self.first_selected_columns + second_selection
+            df1["_filter_key2"] = df1[combined_selection].astype(str).agg('_'.join, axis=1)
+            df2["_filter_key2"] = df2[combined_selection].astype(str).agg('_'.join, axis=1)
 
-        merged = pd.merge(df1, df2, on=key_col, suffixes=('_original', '_transformed'))
-        for num_col in self.numeric_columns:
-            merged['status_' + num_col] = merged[f"{num_col}_original"].eq(merged[f"{num_col}_transformed"]).map({True: 'OK', False: 'Anomaly'})
+            grouped1 = df1.groupby("_filter_key2")[self.numeric_column].sum().reset_index()
+            grouped2 = df2.groupby("_filter_key2")[self.numeric_column].sum().reset_index()
 
-        self.show_table(merged)
+            merged = grouped1.merge(grouped2, on="_filter_key2", suffixes=("_original", "_transformed"), how="outer").fillna(0)
+            merged["status"] = merged.apply(lambda row: "OK" if row[f"{self.numeric_column}_original"] == row[f"{self.numeric_column}_transformed"]
+                                            else ("Missing" if row[f"{self.numeric_column}_transformed"] == 0 else "Anomaly"), axis=1)
 
-    def show_table(self, df):
-        for widget in self.root.winfo_children():
-            widget.destroy()
+            st.dataframe(merged, use_container_width=True)
 
-        frame = tk.Frame(self.root)
-        frame.pack(fill="both", expand=True)
+            if st.button("Export Drill Down to Excel"):
+                self.export_to_excel(merged)
 
-        filter_values = df['_filter_key'].unique().tolist()
-        self.filter_var = tk.StringVar(value=filter_values)
+    def export_to_excel(self, merged_df):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            merged_df.to_excel(writer, sheet_name="Reconciliation", index=False)
+            workbook = writer.book
 
-        filter_frame = tk.Frame(frame)
-        filter_frame.pack(fill="x")
-        tk.Label(filter_frame, text="Filter:").pack(side="left")
-        filter_listbox = tk.Listbox(filter_frame, listvariable=self.filter_var, selectmode="multiple", exportselection=False)
-        filter_listbox.pack(side="left", fill="both", expand=True)
+            string_cols = [col for col in merged_df.columns if merged_df[col].dtype == 'object']
+            num_cols = [col for col in merged_df.columns if pd.api.types.is_numeric_dtype(merged_df[col])]
 
-        scrollbar_y = tk.Scrollbar(filter_frame, orient="vertical", command=filter_listbox.yview)
-        scrollbar_y.pack(side="left", fill="y")
-        filter_listbox.config(yscrollcommand=scrollbar_y.set)
+            for col in string_cols:
+                if col.startswith("_filter_key"):
+                    chart_sheet = workbook.add_worksheet(f"Chart_{col}")
+                    chart = workbook.add_chart({'type': 'column'})
 
-        tree_frame = tk.Frame(frame)
-        tree_frame.pack(fill="both", expand=True)
+                    for idx, num_col in enumerate(num_cols):
+                        chart.add_series({
+                            'name':       num_col,
+                            'categories': ['Reconciliation', 1, merged_df.columns.get_loc(col), len(merged_df), merged_df.columns.get_loc(col)],
+                            'values':     ['Reconciliation', 1, merged_df.columns.get_loc(num_col), len(merged_df), merged_df.columns.get_loc(num_col)],
+                        })
 
-        scrollbar_y_tree = tk.Scrollbar(tree_frame, orient="vertical")
-        scrollbar_x_tree = tk.Scrollbar(tree_frame, orient="horizontal")
-        tree = ttk.Treeview(tree_frame, yscrollcommand=scrollbar_y_tree.set, xscrollcommand=scrollbar_x_tree.set)
-        scrollbar_y_tree.config(command=tree.yview)
-        scrollbar_x_tree.config(command=tree.xview)
+                    chart.set_title({'name': f"Comparison for {col}"})
+                    chart.set_x_axis({'name': col})
+                    chart.set_y_axis({'name': 'Values'})
+                    chart_sheet.insert_chart('B2', chart)
 
-        tree["columns"] = list(df.columns)
-        tree["show"] = "headings"
-        for col in df.columns:
-            tree.heading(col, text=col)
-            tree.column(col, width=150)
+        st.download_button(
+            label="Download Excel File",
+            data=output.getvalue(),
+            file_name="reconciliation_with_charts.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-        for _, row in df.iterrows():
-            tree.insert("", "end", values=list(row))
+def main():
+    st.title("Data Reconciliation Tool with Drill Down & Charts")
+    app = DataReconciliationApp()
+    app.load_data()
+    app.select_first_columns()
 
-        tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar_y_tree.grid(row=0, column=1, sticky="ns")
-        scrollbar_x_tree.grid(row=1, column=0, sticky="ew")
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
-
-        tk.Button(frame, text="Export to Excel", command=lambda: self.export_to_excel(df)).pack(pady=5)
-        tk.Button(frame, text="Next Drill Down", command=lambda: self.page2_drill(df, filter_listbox)).pack(pady=5)
-
-    def page2_drill(self, df, filter_listbox):
-        selected_indices = filter_listbox.curselection()
-        selected_values = [filter_listbox.get(i) for i in selected_indices]
-        self.selected_values = selected_values if selected_values else None
-
-        if self.selected_values:
-            df = df[df['_filter_key'].isin(self.selected_values)]
-
-        self.string_columns = self.remaining_columns
-        self.page2()
-
-    def export_to_excel(self, df):
-        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx")
-        if not file_path:
-            return
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Reconciliation Table"
-
-        for r in dataframe_to_rows(df, index=False, header=True):
-            ws.append(r)
-
-        # Charts for each selected string column
-        for col in self.selected_string_columns:
-            if col in df.columns:
-                ws_chart = wb.create_sheet(title=f"Chart_{col}")
-                pivot = df.groupby(col)[[c for c in df.columns if "_original" in c or "_transformed" in c]].sum().reset_index()
-
-                for r in dataframe_to_rows(pivot, index=False, header=True):
-                    ws_chart.append(r)
-
-                chart = BarChart()
-                data = Reference(ws_chart, min_col=2, max_col=len(pivot.columns), min_row=1, max_row=len(pivot) + 1)
-                cats = Reference(ws_chart, min_col=1, min_row=2, max_row=len(pivot) + 1)
-                chart.add_data(data, titles_from_data=True)
-                chart.set_categories(cats)
-                chart.title = f"Original vs Transformed by {col}"
-                ws_chart.add_chart(chart, "E5")
-
-        wb.save(file_path)
-
-
-root = tk.Tk()
-app = ReconciliationApp(root)
-root.mainloop()
+if __name__ == "__main__":
+    main()
+```
