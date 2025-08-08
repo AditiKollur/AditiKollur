@@ -9,6 +9,7 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 import tempfile
 import os
 import datetime
+import re
 
 
 class DataReconciliationApp:
@@ -24,7 +25,7 @@ class DataReconciliationApp:
         self.string_cols = []
         self.numeric_cols = []
 
-        self.all_selected_string_cols = []  # cumulatively selected string columns (dimensions)
+        self.all_selected_string_cols = []  # cumulatively selected string columns
         self.selected_numeric_cols = []
 
         self.export_wb_path = None
@@ -122,14 +123,13 @@ class DataReconciliationApp:
         self.string_cols = [c for c in common_cols if df_orig_trimmed[c].dtype == 'object']
         self.numeric_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(df_orig_trimmed[c])]
 
-        # Exclude already selected string columns for drill down, show remaining
+        # Exclude already selected string columns for drill down
         remaining_string_cols = [c for c in self.string_cols if c not in self.all_selected_string_cols]
 
         self.clear_root()
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Dimensions (string columns) label + listbox with scrollbars
         tk.Label(frame, text="Select String Columns (Dimensions):").grid(row=0, column=0, sticky='w')
 
         string_frame = tk.Frame(frame)
@@ -147,7 +147,6 @@ class DataReconciliationApp:
         for col in remaining_string_cols:
             self.string_listbox.insert(tk.END, col)
 
-        # Measures (numeric columns) label + listbox with scrollbars
         tk.Label(frame, text="Select Numeric Columns (Measures):").grid(row=0, column=1, sticky='w')
 
         numeric_frame = tk.Frame(frame)
@@ -186,7 +185,7 @@ class DataReconciliationApp:
             messagebox.showerror("Error", "Please select at least one measure (numeric column).")
             return
 
-        # Append newly selected string columns (preserving order, avoid duplicates)
+        # Append newly selected string columns (preserve order, avoid duplicates)
         for col in newly_selected_strings:
             if col not in self.all_selected_string_cols:
                 self.all_selected_string_cols.append(col)
@@ -285,9 +284,9 @@ class DataReconciliationApp:
         btn_frame = tk.Frame(frame)
         btn_frame.pack(pady=10)
 
-        tk.Button(btn_frame, text="Drill Down Next", command=lambda: self.drill_down(df)).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Drill Down Next", command=lambda d=df: self.drill_down(d)).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Restart Inspection", command=self.init_file_selection_page).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Export Current Table to Excel", command=lambda: self.export_to_excel(df, combo_name)).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Export Current Table to Excel", command=lambda d=df, c=combo_name: self.export_to_excel(d, c)).pack(side='left', padx=5)
 
     def drill_down(self, df):
         if self.filter_listbox is None:
@@ -296,13 +295,12 @@ class DataReconciliationApp:
 
         selected_indices = self.filter_listbox.curselection()
         if not selected_indices:
-            # No filter selection, use all rows
             filtered_df = df.copy()
         else:
             selected_keys = [self.filter_listbox.get(i) for i in selected_indices]
             filtered_df = df[df['_filter_key'].isin(selected_keys)]
 
-        # Now filter the full original and transformed dfs to only those matching selected keys in ALL selected string columns
+        # Filter full original and transformed dfs to rows matching ALL selected string cols values in filtered df
         filter_mask_orig = pd.Series(True, index=self.df_original_full.index)
         filter_mask_trans = pd.Series(True, index=self.df_transformed_full.index)
 
@@ -314,64 +312,82 @@ class DataReconciliationApp:
         self.df_original = self.df_original_full[filter_mask_orig].copy()
         self.df_transformed = self.df_transformed_full[filter_mask_trans].copy()
 
-        # Move to next column selection page to select additional columns (if any)
         self.init_column_selection_page()
 
+    def _make_valid_sheet_name(self, name):
+        # Excel sheet names max 31 chars, no [: \ / ? * [ ]]
+        invalid_chars = r'[:\\/?*\[\]]'
+        name = re.sub(invalid_chars, '_', name)
+        return name[:31]
+
     def export_to_excel(self, df, combo_name):
-        # Setup workbook path and open/create workbook
+        if not self.output_folder:
+            messagebox.showerror("Export Error", "Output folder not set. Please select output folder first.")
+            return
+
+        safe_data_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}")
+        safe_chart_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}chart")
+
         if self.export_wb_path is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"Reconcile_{timestamp}.xlsx"
-            self.export_wb_path = os.path.join(self.output_folder if self.output_folder else os.getcwd(), filename)
+            self.export_wb_path = os.path.join(self.output_folder, filename)
             self.export_wb = Workbook()
             default_sheet = self.export_wb.active
             self.export_wb.remove(default_sheet)
-            self.export_counter = 1
+            self.export_counter = 0
         else:
             try:
                 self.export_wb = load_workbook(self.export_wb_path)
-                self.export_counter += 1
-            except Exception:
-                # If loading fails, create new workbook (rare)
-                self.export_wb = Workbook()
-                default_sheet = self.export_wb.active
-                self.export_wb.remove(default_sheet)
-                self.export_counter = 1
+            except PermissionError:
+                retry = messagebox.askretrycancel(
+                    "File Locked",
+                    f"Workbook '{self.export_wb_path}' is open or locked. Please close it and retry."
+                )
+                if retry:
+                    self.export_to_excel(df, combo_name)
+                return
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load existing workbook:\n{e}")
+                return
 
-        sheet_data_name = f"{combo_name}{self.export_counter}"
-        sheet_chart_name = f"{combo_name}{self.export_counter}chart"
+        self.export_counter += 1
 
         # Add data sheet
-        ws = self.export_wb.create_sheet(title=sheet_data_name)
+        ws = self.export_wb.create_sheet(title=safe_data_sheet)
         for r in dataframe_to_rows(df, index=False, header=True):
             ws.append(r)
 
         # Add chart sheet
-        chart_ws = self.export_wb.create_sheet(title=sheet_chart_name)
+        chart_ws = self.export_wb.create_sheet(title=safe_chart_sheet)
 
         for col in self.selected_numeric_cols:
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]].copy()
-            df_chart.set_index('_filter_key', inplace=True)
+            try:
+                df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]].copy()
+                df_chart.set_index('_filter_key', inplace=True)
 
-            plt.figure(figsize=(8, 5))
-            df_chart[[f"{col}_orig", f"{col}_trans"]].plot(kind='bar')
-            plt.title(f"Original vs Transformed - {col}")
-            plt.xticks(rotation=45, ha='right')
-            plt.tight_layout()
-            plt.savefig(temp_file.name)
-            plt.close()
+                plt.figure(figsize=(8, 5))
+                df_chart[[f"{col}_orig", f"{col}_trans"]].plot(kind='bar')
+                plt.title(f"Original vs Transformed - {col}")
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                plt.savefig(temp_file.name)
+                plt.close()
 
-            img = Image(temp_file.name)
-            next_row = chart_ws.max_row + 2 if chart_ws.max_row > 1 else 1
-            chart_ws.add_image(img, f"A{next_row}")
+                img = Image(temp_file.name)
+                next_row = chart_ws.max_row + 2 if chart_ws.max_row > 1 else 1
+                chart_ws.add_image(img, f"A{next_row}")
 
-            temp_file.close()
-            os.unlink(temp_file.name)
+            finally:
+                temp_file.close()
+                os.unlink(temp_file.name)
 
         try:
             self.export_wb.save(self.export_wb_path)
             messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
+        except PermissionError:
+            messagebox.showerror("Error", f"Failed to save workbook because it is open or locked.\nPlease close it and try again.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save Excel workbook:\n{e}")
 
