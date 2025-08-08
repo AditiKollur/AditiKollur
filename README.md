@@ -5,7 +5,7 @@ import pandas as pd
 import datetime
 import os
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.label import DataLabelList
@@ -86,6 +86,13 @@ class ReconciliationApp:
         if folder:
             self.output_folder_var.set(folder)
 
+    def clean_string_columns(self, df):
+        str_cols = df.select_dtypes(include=['object']).columns
+        for col in str_cols:
+            df[col] = df[col].fillna('')
+            df[col] = df[col].apply(lambda x: '' if isinstance(x, str) and x.strip() == '' else x)
+        return df
+
     def load_data(self):
         orig_path = self.orig_path_var.get()
         trans_path = self.trans_path_var.get()
@@ -107,6 +114,9 @@ class ReconciliationApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load Excel files:\n{e}")
             return
+
+        self.df_original_full = self.clean_string_columns(self.df_original_full)
+        self.df_transformed_full = self.clean_string_columns(self.df_transformed_full)
 
         def drop_single_unique_cols(df):
             return df.loc[:, df.apply(lambda col: col.nunique(dropna=True) > 1)]
@@ -147,6 +157,11 @@ class ReconciliationApp:
         self.df_transformed = self.df_transformed_full.copy()
 
         self.string_col_selection_page(initial=True)
+
+    def make_filter_key(self, df, cols):
+        if not cols:
+            return pd.Series([""] * len(df), index=df.index)
+        return df[cols].astype(str).agg(' | '.join, axis=1)
 
     def string_col_selection_page(self, initial=False):
         self.clear_gui()
@@ -259,8 +274,8 @@ class ReconciliationApp:
             self.selected_numeric_cols = selected_numerics
 
         if self._original_filter_key_cache is None:
-            self._original_filter_key_cache = self.df_original_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
-            self._transformed_filter_key_cache = self.df_transformed_full[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
+            self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
+            self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
 
         if self.current_filtered_keys:
             mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
@@ -271,8 +286,8 @@ class ReconciliationApp:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
-        self.df_original['_filter_key'] = self.df_original[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
-        self.df_transformed['_filter_key'] = self.df_transformed[self.all_selected_string_cols].astype(str).agg(' | '.join, axis=1)
+        self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
+        self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
         group_cols = self.all_selected_string_cols
         orig_grouped = self.df_original.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
@@ -280,7 +295,7 @@ class ReconciliationApp:
 
         merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
 
-        merged['_filter_key'] = merged[group_cols].astype(str).agg(' | '.join, axis=1)
+        merged['_filter_key'] = self.make_filter_key(merged, self.all_selected_string_cols)
 
         for col in self.selected_numeric_cols:
             col_orig = f"{col}_orig"
@@ -442,9 +457,8 @@ class ReconciliationApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    root.geometry("1000x700")
+    root.geometry("1100x700")
     app = ReconciliationApp(root)
     root.mainloop()
 
 ```
-
