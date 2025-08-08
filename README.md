@@ -30,16 +30,12 @@ class ReconciliationApp:
         self.export_wb = None
         self.export_counter = 0
 
-        self._original_filter_key_cache = None
-        self._transformed_filter_key_cache = None
+        self.current_filtered_keys = None
+        self.current_table_df = None
 
         self.current_string_selection_vars = []
         self.current_numeric_selection_vars = []
-
         self.current_filter_listbox = None
-
-        self.current_table_df = None
-        self.current_filtered_keys = None
 
         self.file_select_screen()
 
@@ -148,8 +144,7 @@ class ReconciliationApp:
         self.export_wb_path = None
         self.export_wb = None
         self.output_folder = output_folder
-        self._original_filter_key_cache = None
-        self._transformed_filter_key_cache = None
+
         self.current_filtered_keys = None
         self.current_table_df = None
 
@@ -159,10 +154,12 @@ class ReconciliationApp:
         self.string_col_selection_page(initial=True)
 
     def make_filter_key(self, df, cols):
-        # Fix: only use columns present in df to avoid errors
+        # Only use columns that exist in df
         existing_cols = [c for c in cols if c in df.columns]
         if not existing_cols:
             return pd.Series([''] * len(df), index=df.index)
+        # Concatenate string values with ' | '
+        # Return a Series (not DataFrame)
         return df[existing_cols].astype(str).agg(' | '.join, axis=1)
 
     def string_col_selection_page(self, initial=False):
@@ -275,19 +272,21 @@ class ReconciliationApp:
                 return
             self.selected_numeric_cols = selected_numerics
 
-        if self._original_filter_key_cache is None:
-            self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
-            self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
+        # Reset caches on each generate_table call to avoid stale columns
+        self._original_filter_key_cache = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
+        self._transformed_filter_key_cache = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
 
         if self.current_filtered_keys:
             mask_orig = self._original_filter_key_cache.isin(self.current_filtered_keys)
             mask_trans = self._transformed_filter_key_cache.isin(self.current_filtered_keys)
-            self.df_original = self.df_original_full[mask_orig].copy()
-            self.df_transformed = self.df_transformed_full[mask_trans].copy()
+            # Use filtered full dfs to retain all columns needed for filter keys on next drill down
+            self.df_original = self.df_original_full.loc[mask_orig].copy()
+            self.df_transformed = self.df_transformed_full.loc[mask_trans].copy()
         else:
             self.df_original = self.df_original_full.copy()
             self.df_transformed = self.df_transformed_full.copy()
 
+        # Create _filter_key anew for current dfs
         self.df_original['_filter_key'] = self.make_filter_key(self.df_original, self.all_selected_string_cols)
         self.df_transformed['_filter_key'] = self.make_filter_key(self.df_transformed, self.all_selected_string_cols)
 
@@ -377,9 +376,8 @@ class ReconciliationApp:
 
         for c in cols_display:
             tree.heading(c, text=c)
-            # Adjust width to content length, max 200, min 80
             max_len = max(self.current_table_df[c].astype(str).map(len).max(), len(c))
-            width = min(max(80, max_len*10), 200)
+            width = min(max(80, max_len * 10), 200)
             tree.column(c, width=width, anchor='w')
 
         for _, row in self.current_table_df.iterrows():
