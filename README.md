@@ -15,31 +15,24 @@ class ReconciliationApp:
         self.root = root
         self.root.title("Data Reconciliation")
 
-        # DataFrames full loaded
-        self.df_original_full = None
-        self.df_transformed_full = None
+        # Full original & transformed DataFrames
+        self.df_original = None
+        self.df_transformed = None
 
-        # DataFrames filtered per drill-down step
-        self.df_original_filtered = None
-        self.df_transformed_filtered = None
-
-        # Columns selected by user
+        # User selected columns
         self.selected_string_cols = []
         self.selected_numeric_cols = []
 
-        # Dictionary of {string_col: list of selected filter values}
-        self.current_filters = {}
+        # Current filtered keys on concatenated key col
+        self.current_filter_keys = None  # None means no filter (all rows)
+
+        # Current aggregated DataFrame with concatenated filter key col
+        self.current_table_df = None
 
         self.output_folder = None
-        self.export_wb_path = None
         self.export_wb = None
+        self.export_wb_path = None
         self.export_counter = 0
-
-        # GUI state holders
-        self.current_string_vars = []
-        self.current_numeric_vars = []
-        self.current_value_listbox = None
-        self.current_table_df = None
 
         self.file_select_screen()
 
@@ -109,28 +102,28 @@ class ReconciliationApp:
             return
 
         try:
-            self.df_original_full = pd.read_excel(orig_path)
-            self.df_transformed_full = pd.read_excel(trans_path)
+            self.df_original = pd.read_excel(orig_path)
+            self.df_transformed = pd.read_excel(trans_path)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load Excel files:\n{e}")
             return
 
-        self.df_original_full = self.clean_string_columns(self.df_original_full)
-        self.df_transformed_full = self.clean_string_columns(self.df_transformed_full)
+        self.df_original = self.clean_string_columns(self.df_original)
+        self.df_transformed = self.clean_string_columns(self.df_transformed)
 
-        def drop_single_unique_cols(df):
-            return df.loc[:, df.apply(lambda col: col.nunique(dropna=True) > 1)]
+        # Find common columns with variance
+        common_cols = list(set(self.df_original.columns).intersection(set(self.df_transformed.columns)))
 
-        df_orig_clean = drop_single_unique_cols(self.df_original_full)
-        df_trans_clean = drop_single_unique_cols(self.df_transformed_full)
+        # Filter common columns where both have variance
+        def cols_with_variance(df, cols):
+            return [c for c in cols if df[c].nunique(dropna=True) > 1]
 
-        common_cols = list(set(df_orig_clean.columns).intersection(set(df_trans_clean.columns)))
+        common_cols_var = list(set(cols_with_variance(self.df_original, common_cols)).intersection(
+            set(cols_with_variance(self.df_transformed, common_cols))
+        ))
 
-        df_orig_common = self.df_original_full[common_cols]
-        df_trans_common = self.df_transformed_full[common_cols]
-
-        self.string_cols_available = [col for col in common_cols if df_orig_common[col].dtype == 'object']
-        self.numeric_cols_available = [col for col in common_cols if pd.api.types.is_numeric_dtype(df_orig_common[col])]
+        self.string_cols_available = [c for c in common_cols_var if self.df_original[c].dtype == 'object']
+        self.numeric_cols_available = [c for c in common_cols_var if pd.api.types.is_numeric_dtype(self.df_original[c])]
 
         if not self.string_cols_available:
             messagebox.showerror("Error", "No common string columns found for selection.")
@@ -141,30 +134,22 @@ class ReconciliationApp:
 
         self.selected_string_cols = []
         self.selected_numeric_cols = []
-        self.current_filters = {}
+        self.current_filter_keys = None
+        self.current_table_df = None
+
         self.export_counter = 0
-        self.export_wb_path = None
         self.export_wb = None
+        self.export_wb_path = None
         self.output_folder = output_folder
 
-        self.string_col_selection_page(initial=True)
+        self.string_col_selection_page()
 
-    def string_col_selection_page(self, initial=False):
+    def string_col_selection_page(self):
         self.clear_gui()
         frame = ttk.Frame(self.root)
         frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-        title_text = "Select String Columns (Keys for Matching) - Select 1 or more:"
-        if not initial:
-            title_text = "Select Additional String Columns for Drill Down - Select 1 or more:"
-
-        ttk.Label(frame, text=title_text).pack(anchor="w")
-
-        available = [c for c in self.string_cols_available if c not in self.selected_string_cols]
-        if not available:
-            # No more columns left to select for drill-down
-            self.numeric_col_selection_page()
-            return
+        ttk.Label(frame, text="Select String Columns (Keys for Grouping & Filtering) - Select 1 or more:").pack(anchor="w")
 
         canvas = tk.Canvas(frame)
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
@@ -172,16 +157,14 @@ class ReconciliationApp:
 
         scrollable_frame.bind(
             "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
         self.current_string_vars = []
-        for col in available:
+        for col in self.string_cols_available:
             var = tk.BooleanVar()
             chk = ttk.Checkbutton(scrollable_frame, text=col, variable=var)
             chk.pack(anchor="w", padx=5, pady=2)
@@ -192,27 +175,16 @@ class ReconciliationApp:
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Next", command=self.after_string_selection).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Back to File Selection", command=self.file_select_screen).pack(side="left", padx=5)
 
-        ttk.Button(btn_frame, text="Next", command=lambda: self.after_string_selection(initial)).pack(side="left", padx=5)
-        if initial:
-            ttk.Button(btn_frame, text="Back to File Selection", command=self.file_select_screen).pack(side="left", padx=5)
-        else:
-            ttk.Button(btn_frame, text="Back to Table", command=self.show_table_with_value_filter).pack(side="left", padx=5)
-
-    def after_string_selection(self, initial):
+    def after_string_selection(self):
         selected = [col for col, var in self.current_string_vars if var.get()]
         if not selected:
             messagebox.showerror("Selection Error", "Select at least one string column.")
             return
-        for col in selected:
-            if col not in self.selected_string_cols:
-                self.selected_string_cols.append(col)
-
-        if initial:
-            self.numeric_col_selection_page()
-        else:
-            # Drill down - show table with filter by selected values in last selected string col
-            self.show_table_with_value_filter()
+        self.selected_string_cols = selected
+        self.numeric_col_selection_page()
 
     def numeric_col_selection_page(self):
         self.clear_gui()
@@ -227,9 +199,7 @@ class ReconciliationApp:
 
         scrollable_frame.bind(
             "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
@@ -248,169 +218,203 @@ class ReconciliationApp:
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="Generate Table", command=self.generate_table).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Back to String Selection", command=lambda: self.string_col_selection_page(initial=True)).pack(side="left")
-
-    def apply_filters(self):
-        """Apply current_filters dict to full DataFrames and update filtered DataFrames"""
-        df_orig = self.df_original_full
-        df_trans = self.df_transformed_full
-
-        if not self.current_filters:
-            self.df_original_filtered = df_orig.copy()
-            self.df_transformed_filtered = df_trans.copy()
-            return
-
-        mask_orig = pd.Series(True, index=df_orig.index)
-        mask_trans = pd.Series(True, index=df_trans.index)
-
-        for col, accepted_values in self.current_filters.items():
-            mask_orig &= df_orig[col].isin(accepted_values)
-            mask_trans &= df_trans[col].isin(accepted_values)
-
-        self.df_original_filtered = df_orig.loc[mask_orig].copy()
-        self.df_transformed_filtered = df_trans.loc[mask_trans].copy()
+        ttk.Button(btn_frame, text="Back to String Selection", command=self.string_col_selection_page).pack(side="left", padx=5)
 
     def generate_table(self):
-        # Get selected numeric cols
         selected_numerics = [col for col, var in self.current_numeric_vars if var.get()]
         if not selected_numerics:
             messagebox.showerror("Selection Error", "Select at least one numeric column.")
             return
 
         self.selected_numeric_cols = selected_numerics
+        # Start with no filter keys selected (all rows)
+        self.current_filter_keys = None
 
-        # Clear any filters for first table generation
-        self.current_filters = {}
+        self.regenerate_table()
 
-        self.apply_filters()
+    def concat_filter_key(self, df, cols):
+        # Concatenate string columns values with '||' separator to form filter key
+        return df[cols].astype(str).agg('||'.join, axis=1)
 
-        merged = self.aggregate_and_merge()
+    def regenerate_table(self):
+        # If current_filter_keys is None => use all rows, else filter current_table_df by these keys
 
-        self.current_table_df = merged
+        # First, we need to get the subset of original and transformed data to aggregate
 
-        self.show_table_with_value_filter(initial=True)
+        # Filter original and transformed data based on current filter keys on previously selected string columns
 
-    def aggregate_and_merge(self):
+        if self.current_filter_keys is None:
+            # No filter applied => use full data
+            df_orig_filtered = self.df_original.copy()
+            df_trans_filtered = self.df_transformed.copy()
+        else:
+            # Filter original and transformed by matching on concatenated string key columns in previous aggregation
+            # We must reconstruct concatenated key in original data to filter on keys
+
+            # Create concatenated key in original data
+            key_cols = self.selected_string_cols
+            df_orig_key = self.concat_filter_key(self.df_original, key_cols)
+            df_trans_key = self.concat_filter_key(self.df_transformed, key_cols)
+
+            mask_orig = df_orig_key.isin(self.current_filter_keys)
+            mask_trans = df_trans_key.isin(self.current_filter_keys)
+
+            df_orig_filtered = self.df_original.loc[mask_orig].copy()
+            df_trans_filtered = self.df_transformed.loc[mask_trans].copy()
+
+        # Now aggregate on selected string columns
         group_cols = self.selected_string_cols
 
-        orig_grouped = self.df_original_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
-        trans_grouped = self.df_transformed_filtered.groupby(group_cols)[self.selected_numeric_cols].sum().reset_index()
+        if len(group_cols) == 0:
+            messagebox.showerror("Error", "No string columns selected for grouping.")
+            return
+
+        try:
+            orig_grouped = df_orig_filtered.groupby(group_cols)[self.selected_numeric_cols].sum(min_count=1).reset_index()
+            trans_grouped = df_trans_filtered.groupby(group_cols)[self.selected_numeric_cols].sum(min_count=1).reset_index()
+        except Exception as e:
+            messagebox.showerror("Error during aggregation:\n" + str(e))
+            return
 
         merged = pd.merge(orig_grouped, trans_grouped, on=group_cols, how='outer', suffixes=('_orig', '_trans'))
 
-        # Fill NaNs in numeric cols with 0 for sum comparisons
+        # Fill NaNs in numeric cols with 0
         for col in self.selected_numeric_cols:
             merged[f"{col}_orig"] = pd.to_numeric(merged[f"{col}_orig"], errors='coerce').fillna(0)
             merged[f"{col}_trans"] = pd.to_numeric(merged[f"{col}_trans"], errors='coerce').fillna(0)
 
-            def anomaly_status(row):
-                v1 = row[f"{col}_orig"]
-                v2 = row[f"{col}_trans"]
-                if v1 != v2:
-                    return "Anomaly"
-                return "OK"
+            # Anomaly status
+            def anomaly(row):
+                return "Anomaly" if row[f"{col}_orig"] != row[f"{col}_trans"] else "OK"
 
-            merged[f"{col}_status"] = merged.apply(anomaly_status, axis=1)
+            merged[f"{col}_status"] = merged.apply(anomaly, axis=1)
 
-        return merged
+        # Add concatenated filter key column for filtering
+        merged['_filter_key'] = self.concat_filter_key(merged, group_cols)
 
-    def show_table_with_value_filter(self, initial=False):
+        # Sort by _filter_key for UI ease
+        merged.sort_values('_filter_key', inplace=True)
+
+        self.current_table_df = merged
+
+        self.show_table_with_filter()
+
+    def show_table_with_filter(self):
+        self.clear_gui()
+        frame = ttk.Frame(self.root)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        ttk.Label(frame, text="Aggregated Table (with concatenated filter key):").pack(anchor="w")
+
+        # Filter UI for _filter_key column
+        ttk.Label(frame, text="Select filter key(s) for drill down (multiple selection allowed):").pack(anchor="w")
+
+        filter_keys = list(self.current_table_df['_filter_key'].unique())
+
+        self.filter_key_listbox = tk.Listbox(frame, selectmode="extended", height=12)
+        for key in filter_keys:
+            self.filter_key_listbox.insert(tk.END, key)
+        self.filter_key_listbox.pack(fill="both", expand=False, pady=5)
+
+        # Show table in Treeview excluding the _filter_key column (can be hidden but showing here for debugging)
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill="both", expand=True)
+
+        tree = ttk.Treeview(tree_frame, show="headings")
+        tree.pack(side="left", fill="both", expand=True)
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.pack(side="right", fill="y")
+        hsb.pack(side="bottom", fill="x")
+
+        # Columns except _filter_key (but you can show it if you want)
+        display_cols = [c for c in self.current_table_df.columns if c != '_filter_key']
+
+        tree["columns"] = display_cols
+
+        for col in display_cols:
+            tree.heading(col, text=col)
+            tree.column(col, width=120, anchor="w")
+
+        for _, row in self.current_table_df.iterrows():
+            values = [row[col] for col in display_cols]
+            tree.insert("", "end", values=values)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=10)
+
+        ttk.Button(btn_frame, text="Drill Down with Selected Filters", command=self.drill_down).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Export Current Table", command=self.export_current_table).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Restart", command=self.file_select_screen).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Add More String Columns & Regenerate", command=self.add_more_string_columns).pack(side="left", padx=5)
+
+    def drill_down(self):
+        # Get selected filter keys from listbox
+        selected_indices = self.filter_key_listbox.curselection()
+        if not selected_indices:
+            messagebox.showerror("Error", "Select at least one filter key to drill down.")
+            return
+        selected_keys = [self.filter_key_listbox.get(i) for i in selected_indices]
+
+        self.current_filter_keys = selected_keys
+
+        self.regenerate_table()
+
+    def add_more_string_columns(self):
+        # Allow user to select additional string columns (not already selected)
+        remaining_cols = [c for c in self.string_cols_available if c not in self.selected_string_cols]
+        if not remaining_cols:
+            messagebox.showinfo("Info", "No more string columns available to add.")
+            return
+
         self.clear_gui()
         frame = ttk.Frame(self.root)
         frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-        # Show the aggregated table
-        if self.current_table_df is None or self.current_table_df.empty:
-            ttk.Label(frame, text="No data to display for current filter.").pack()
-            btn_frame = ttk.Frame(self.root)
-            btn_frame.pack(pady=10)
-            ttk.Button(btn_frame, text="Back to String Selection", command=lambda: self.string_col_selection_page(initial=True)).pack()
-            return
+        ttk.Label(frame, text="Select Additional String Columns to Add (for next drill down):").pack(anchor="w")
 
-        # Show filter UI only if drill down possible (more string columns left)
-        remaining_string_cols = [c for c in self.string_cols_available if c not in self.selected_string_cols]
-        last_selected_col = None
-        if self.selected_string_cols:
-            last_selected_col = self.selected_string_cols[-1]
+        canvas = tk.Canvas(frame)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
 
-        # If drill down possible, show listbox to select values in last selected string col to filter next
-        if remaining_string_cols and last_selected_col:
-            ttk.Label(frame, text=f"Select values in '{last_selected_col}' to filter drill down (multiple selection allowed):").pack(anchor="w")
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
 
-            values = sorted(self.current_table_df[last_selected_col].dropna().unique())
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-            self.current_value_listbox = tk.Listbox(frame, selectmode="extended", height=8)
-            for val in values:
-                self.current_value_listbox.insert(tk.END, val)
-            self.current_value_listbox.pack(fill="both", expand=False)
+        self.current_string_vars = []
+        for col in remaining_cols:
+            var = tk.BooleanVar()
+            chk = ttk.Checkbutton(scrollable_frame, text=col, variable=var)
+            chk.pack(anchor="w", padx=5, pady=2)
+            self.current_string_vars.append((col, var))
 
-        else:
-            self.current_value_listbox = None
-
-        # Show the grouped aggregated table in Treeview
-        table_frame = ttk.Frame(self.root)
-        table_frame.pack(padx=10, pady=10, fill="both", expand=True)
-
-        tree = ttk.Treeview(table_frame, show="headings")
-        tree.pack(side="left", fill="both", expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
-
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-
-        vsb.pack(side="right", fill="y")
-        hsb.pack(side="bottom", fill="x")
-
-        cols = list(self.current_table_df.columns)
-
-        tree["columns"] = cols
-
-        for c in cols:
-            tree.heading(c, text=c)
-            tree.column(c, width=130, anchor='w')
-
-        for _, row in self.current_table_df.iterrows():
-            values = [row[c] for c in cols]
-            tree.insert("", "end", values=values)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
         btn_frame = ttk.Frame(self.root)
         btn_frame.pack(pady=10)
+        ttk.Button(btn_frame, text="Add & Regenerate Table", command=self.after_add_more_string_columns).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Back to Table", command=self.show_table_with_filter).pack(side="left", padx=5)
 
-        if self.current_value_listbox is not None:
-            ttk.Button(btn_frame, text="Apply Filter & Drill Down", command=self.apply_filter_and_drill_down).pack(side="left", padx=5)
-
-        ttk.Button(btn_frame, text="Export Current Table", command=self.export_current_table).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Start Over (File Selection)", command=self.file_select_screen).pack(side="left", padx=5)
-
-        if initial:
-            ttk.Button(btn_frame, text="Back to Numeric Selection", command=self.numeric_col_selection_page).pack(side="left", padx=5)
-
-    def apply_filter_and_drill_down(self):
-        # Get selected values in last selected string col to add to filters
-        if not self.selected_string_cols:
-            messagebox.showerror("Error", "No string columns selected.")
+    def after_add_more_string_columns(self):
+        selected = [col for col, var in self.current_string_vars if var.get()]
+        if not selected:
+            messagebox.showerror("Selection Error", "Select at least one string column to add.")
             return
 
-        last_col = self.selected_string_cols[-1]
+        self.selected_string_cols.extend(selected)
 
-        if self.current_value_listbox:
-            selected_indices = self.current_value_listbox.curselection()
-            if not selected_indices:
-                messagebox.showerror("Error", "Select at least one value to drill down.")
-                return
-
-            selected_values = [self.current_value_listbox.get(i) for i in selected_indices]
-
-            # Update filters dict for last_col
-            self.current_filters[last_col] = selected_values
-
-        # Now show next string col selection for drill down
-        self.string_col_selection_page(initial=False)
+        self.regenerate_table()
 
     def export_current_table(self):
         if self.current_table_df is None or self.current_table_df.empty:
-            messagebox.showerror("Error", "No table to export.")
+            messagebox.showerror("Error", "No data to export.")
             return
 
         if self.export_wb is None:
@@ -418,6 +422,7 @@ class ReconciliationApp:
             fname = f"Reconcile_{timestamp}.xlsx"
             self.export_wb_path = os.path.join(self.output_folder, fname)
             self.export_wb = Workbook()
+            # Remove default sheet created by openpyxl
             default_sheet = self.export_wb.active
             self.export_wb.remove(default_sheet)
             self.export_counter = 1
@@ -464,9 +469,9 @@ class ReconciliationApp:
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
+            messagebox.showinfo("Export Successful", f"Workbook saved/appended:\n{self.export_wb_path}")
         except PermissionError:
-            messagebox.showerror("Error", "Failed to save workbook. Please close it if open and retry.")
+            messagebox.showerror("Error", "Close the Excel file if it's open and try again.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save workbook:\n{e}")
 
