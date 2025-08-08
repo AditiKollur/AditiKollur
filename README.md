@@ -324,10 +324,15 @@ class DataReconciliationApp:
         if not self.output_folder:
             messagebox.showerror("Export Error", "Output folder not set. Please select output folder first.")
             return
-
+    
+        # Verify output folder still exists
+        if not os.path.exists(self.output_folder):
+            messagebox.showerror("Export Error", f"Output folder '{self.output_folder}' does not exist.")
+            return
+    
         safe_data_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}")
         safe_chart_sheet = self._make_valid_sheet_name(f"{combo_name}{self.export_counter+1}chart")
-
+    
         if self.export_wb_path is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"Reconcile_{timestamp}.xlsx"
@@ -350,39 +355,46 @@ class DataReconciliationApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load existing workbook:\n{e}")
                 return
-
+    
         self.export_counter += 1
-
+    
         # Add data sheet
         ws = self.export_wb.create_sheet(title=safe_data_sheet)
         for r in dataframe_to_rows(df, index=False, header=True):
             ws.append(r)
-
+    
         # Add chart sheet
         chart_ws = self.export_wb.create_sheet(title=safe_chart_sheet)
-
+    
         for col in self.selected_numeric_cols:
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            # Create PNG inside output folder
+            png_path = os.path.join(self.output_folder, f"chart_{combo_name}_{col}_{self.export_counter}.png")
             try:
                 df_chart = df[['_filter_key', f"{col}_orig", f"{col}_trans"]].copy()
                 df_chart.set_index('_filter_key', inplace=True)
-
+    
                 plt.figure(figsize=(8, 5))
                 df_chart[[f"{col}_orig", f"{col}_trans"]].plot(kind='bar')
                 plt.title(f"Original vs Transformed - {col}")
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-                plt.savefig(temp_file.name)
+                plt.savefig(png_path)
                 plt.close()
-
-                img = Image(temp_file.name)
+    
+                img = Image(png_path)
                 next_row = chart_ws.max_row + 2 if chart_ws.max_row > 1 else 1
                 chart_ws.add_image(img, f"A{next_row}")
-
+    
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed creating chart for {col}:\n{e}")
             finally:
-                temp_file.close()
-                os.unlink(temp_file.name)
-
+                # Remove PNG after adding to Excel
+                if os.path.exists(png_path):
+                    try:
+                        os.remove(png_path)
+                    except:
+                        pass
+    
         try:
             self.export_wb.save(self.export_wb_path)
             messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
@@ -390,6 +402,7 @@ class DataReconciliationApp:
             messagebox.showerror("Error", f"Failed to save workbook because it is open or locked.\nPlease close it and try again.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save Excel workbook:\n{e}")
+
 
 
 if __name__ == "__main__":
