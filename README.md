@@ -26,6 +26,10 @@ class DataReconciliationApp:
         for widget in self.root.winfo_children():
             widget.destroy()
 
+    def drop_single_unique_columns(self, df):
+        # Drops columns that have only 1 unique value including NaN (dropna=False)
+        return df.loc[:, df.nunique(dropna=False) > 1]
+
     def init_file_selection_page(self):
         self.clear_root()
         frame = tk.Frame(self.root)
@@ -55,16 +59,22 @@ class DataReconciliationApp:
             messagebox.showerror("Error", "Please load both files before proceeding.")
             return
 
-        # Get common columns
-        common_cols = list(set(self.df_original.columns) & set(self.df_transformed.columns))
-        self.string_cols = [c for c in common_cols if self.df_original[c].dtype == 'object']
-        self.numeric_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(self.df_original[c])]
+        # Drop columns with only 1 unique value including NaN from both dataframes
+        df_orig_trimmed = self.drop_single_unique_columns(self.df_original)
+        df_trans_trimmed = self.drop_single_unique_columns(self.df_transformed)
+
+        # Find common columns after dropping single-unique-value columns
+        common_cols = list(set(df_orig_trimmed.columns) & set(df_trans_trimmed.columns))
+
+        # Separate string and numeric columns from original trimmed df (assumes same dtypes)
+        self.string_cols = [c for c in common_cols if df_orig_trimmed[c].dtype == 'object']
+        self.numeric_cols = [c for c in common_cols if pd.api.types.is_numeric_dtype(df_orig_trimmed[c])]
 
         self.clear_root()
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
 
-        # String columns selection
+        # String columns selection UI
         tk.Label(frame, text="Select String Columns:").grid(row=0, column=0, padx=10, pady=5, sticky="w")
         self.string_listbox = tk.Listbox(frame, selectmode="multiple", exportselection=False, height=10)
         for col in self.string_cols:
@@ -74,7 +84,7 @@ class DataReconciliationApp:
         scrollbar1.grid(row=1, column=1, sticky="ns", pady=5)
         self.string_listbox.config(yscrollcommand=scrollbar1.set)
 
-        # Numeric columns selection
+        # Numeric columns selection UI
         tk.Label(frame, text="Select Numeric Columns:").grid(row=0, column=2, padx=10, pady=5, sticky="w")
         self.numeric_listbox = tk.Listbox(frame, selectmode="multiple", exportselection=False, height=10)
         for col in self.numeric_cols:
@@ -84,7 +94,6 @@ class DataReconciliationApp:
         scrollbar2.grid(row=1, column=3, sticky="ns", pady=5)
         self.numeric_listbox.config(yscrollcommand=scrollbar2.set)
 
-        # Make columns expand with window resize
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_columnconfigure(2, weight=1)
         frame.grid_rowconfigure(1, weight=1)
@@ -99,7 +108,7 @@ class DataReconciliationApp:
             messagebox.showerror("Error", "Please select at least one string and one numeric column.")
             return
 
-        # Merge both DataFrames on selected string columns
+        # Merge original and transformed on selected string columns with outer join
         merged = pd.merge(
             self.df_original, self.df_transformed,
             on=self.selected_string_cols,
@@ -107,7 +116,7 @@ class DataReconciliationApp:
             how='outer'
         )
 
-        # Create concatenated filter key
+        # Create concatenated filter key from string columns
         merged['_filter_key'] = merged[self.selected_string_cols].astype(str).agg(' | '.join, axis=1)
 
         # Aggregate numeric columns sums per filter_key
@@ -118,9 +127,10 @@ class DataReconciliationApp:
 
         grouped = merged.groupby('_filter_key').agg(agg_dict).reset_index()
 
-        # Anomaly detection column per numeric col
+        # Add anomaly status columns per numeric col
         for col in self.selected_numeric_cols:
             status_col = col + '_status'
+
             def status_func(row):
                 o = row.get(col + '_orig')
                 t = row.get(col + '_trans')
@@ -130,6 +140,7 @@ class DataReconciliationApp:
                     return 'OK'
                 else:
                     return 'Anomaly'
+
             grouped[status_col] = grouped.apply(status_func, axis=1)
 
         self.show_table(grouped)
@@ -139,22 +150,20 @@ class DataReconciliationApp:
         frame = tk.Frame(self.root)
         frame.pack(fill="both", expand=True)
 
-        # Filter dropdown (multi-select)
+        # Filter dropdown multi-select
         filter_label = tk.Label(frame, text="Filter _filter_key (multiple select):")
         filter_label.pack(anchor="w", padx=10, pady=(10,0))
 
-        # Use a Listbox for multi-select filter keys with scrollbar
         self.filter_listbox = tk.Listbox(frame, selectmode='multiple', height=8)
         self.filter_listbox.pack(fill='x', padx=10)
         scrollbar_filter = tk.Scrollbar(frame, orient='vertical', command=self.filter_listbox.yview)
         scrollbar_filter.pack(side='right', fill='y', padx=(0,10), pady=(0,130))
         self.filter_listbox.config(yscrollcommand=scrollbar_filter.set)
 
-        # Insert unique keys
         for val in df['_filter_key'].unique():
             self.filter_listbox.insert(tk.END, val)
 
-        # Treeview Table
+        # Treeview with scrollbars
         tree_frame = tk.Frame(frame)
         tree_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -162,23 +171,19 @@ class DataReconciliationApp:
         tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
         tree.pack(side='left', fill='both', expand=True)
 
-        # Setup columns
         for col in columns:
             tree.heading(col, text=col)
             tree.column(col, width=120, anchor='w')
 
-        # Insert data rows
         for _, row in df.iterrows():
             tree.insert('', tk.END, values=list(row))
 
-        # Scrollbars for treeview
         vsb = ttk.Scrollbar(tree_frame, orient='vertical', command=tree.yview)
         vsb.pack(side='right', fill='y')
         hsb = ttk.Scrollbar(frame, orient='horizontal', command=tree.xview)
         hsb.pack(fill='x', padx=10)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
 
-        # Buttons
         btn_frame = tk.Frame(frame)
         btn_frame.pack(pady=10)
 
@@ -187,33 +192,27 @@ class DataReconciliationApp:
         tk.Button(btn_frame, text="Back", command=self.init_column_selection_page).pack(side='left', padx=10)
 
     def drill_down(self, df):
-        # Get selected filter keys
         selected_indices = self.filter_listbox.curselection()
         if not selected_indices:
-            # No filter, use all keys
             filtered_df = df.copy()
         else:
             selected_keys = [self.filter_listbox.get(i) for i in selected_indices]
             filtered_df = df[df['_filter_key'].isin(selected_keys)]
 
-        # Prepare filtered original and transformed data for next drill down
-        # Filter original and transformed on selected keys
         keys_split = filtered_df['_filter_key'].str.split(' \| ', expand=True)
-        # Flatten all distinct key parts
         filter_mask_orig = pd.Series(False, index=self.df_original.index)
         filter_mask_trans = pd.Series(False, index=self.df_transformed.index)
         for i, col in enumerate(self.selected_string_cols):
             vals = keys_split[i].unique()
             filter_mask_orig |= self.df_original[col].astype(str).isin(vals)
             filter_mask_trans |= self.df_transformed[col].astype(str).isin(vals)
+
         self.df_original = self.df_original[filter_mask_orig]
         self.df_transformed = self.df_transformed[filter_mask_trans]
 
-        # Reload the column selection page so user can pick new string/numeric cols on filtered data
         self.init_column_selection_page()
 
     def export_to_excel(self, df):
-        # Ask file to save
         file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
                                                  filetypes=[("Excel files", "*.xlsx")])
         if not file_path:
@@ -226,13 +225,10 @@ class DataReconciliationApp:
         for r in dataframe_to_rows(df, index=False, header=True):
             ws.append(r)
 
-        # One chart per numeric column
         for col in self.selected_numeric_cols:
             chart_ws = wb.create_sheet(title=f"Chart_{col}")
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             df_chart = df[['_filter_key', col+'_orig', col+'_trans']]
-
-            import matplotlib.pyplot as plt
 
             plt.figure(figsize=(8, 5))
             df_chart.set_index('_filter_key')[[col+'_orig', col+'_trans']].plot(kind='bar')
