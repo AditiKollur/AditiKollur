@@ -394,7 +394,7 @@ class ReconciliationApp:
         if self.current_table_df is None or self.current_table_df.empty:
             messagebox.showerror("Error", "No table to export.")
             return
-
+    
         if self.export_wb is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             fname = f"Reconcile_{timestamp}.xlsx"
@@ -405,38 +405,81 @@ class ReconciliationApp:
             self.export_counter = 1
         else:
             self.export_counter += 1
-
+    
         sheet_name = f"Sheet{self.export_counter}"
-        chart_sheet_name = f"Chart{self.export_counter}"
-
         ws = self.export_wb.create_sheet(title=sheet_name)
-
+    
+        # Write DataFrame to sheet
         for r in dataframe_to_rows(self.current_table_df, index=False, header=True):
             ws.append(r)
-
-        chart_ws = self.export_wb.create_sheet(title=chart_sheet_name)
-
-        # Example: create bar chart of first numeric col sums
-        if self.selected_numeric_cols:
-            num_col = self.selected_numeric_cols[0]
-            orig_col = f"{num_col}_orig"
-            trans_col = f"{num_col}_trans"
-            if orig_col in self.current_table_df.columns and trans_col in self.current_table_df.columns:
-                cats = Reference(ws, min_col=1, min_row=2, max_row=1 + len(self.current_table_df))
-                data = Reference(ws, min_col=ws.max_column - 3, min_row=1, max_row=1 + len(self.current_table_df))
-                chart = BarChart()
-                chart.title = f"{num_col} Orig vs Trans"
-                chart.add_data(data, titles_from_data=True)
-                chart.set_categories(cats)
-                chart.legend.position = "r"
-                chart.dataLabels = DataLabelList()
-                chart.dataLabels.showVal = True
-
-                chart_ws.add_chart(chart, "A1")
-
+    
+        # If no numeric cols selected, skip charts
+        if not self.selected_numeric_cols:
+            try:
+                self.export_wb.save(self.export_wb_path)
+                messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
+            except Exception as e:
+                messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
+            return
+    
+        num_col = self.selected_numeric_cols[0]
+        col_orig = f"{num_col}_orig"
+        col_trans = f"{num_col}_trans"
+    
+        if col_orig not in self.current_table_df.columns or col_trans not in self.current_table_df.columns:
+            try:
+                self.export_wb.save(self.export_wb_path)
+                messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
+            except Exception as e:
+                messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
+            return
+    
+        # Get string columns in current drilldown level (columns used for grouping in current table)
+        # They are all string columns in self.drilldown_history flattened
+        current_string_cols = [col for step in self.drilldown_history for col in step]
+    
+        # Create one chart sheet per string column
+        for idx, s_col in enumerate(current_string_cols, start=1):
+            chart_ws = self.export_wb.create_sheet(title=f"Chart_{self.export_counter}_{s_col}")
+    
+            # Group data by this string col and sum numeric original and transformed values
+            grouped = self.current_table_df.groupby(s_col)[[col_orig, col_trans]].sum().reset_index()
+    
+            if grouped.empty:
+                continue
+    
+            # Write grouped data to chart sheet starting at A1
+            for r in dataframe_to_rows(grouped, index=False, header=True):
+                chart_ws.append(r)
+    
+            # Determine columns for categories and data
+            cat_col = 1  # string column unique values (A)
+            orig_col_idx = 2  # original sums (B)
+            trans_col_idx = 3  # transformed sums (C)
+            nrows = len(grouped) + 1  # including header
+    
+            cats = Reference(chart_ws, min_col=cat_col, min_row=2, max_row=nrows)
+            data = Reference(chart_ws, min_col=orig_col_idx, min_row=1, max_row=nrows)
+    
+            chart = BarChart()
+            chart.type = "col"
+            chart.style = 10
+            chart.title = f"{num_col} by {s_col} (Orig vs Trans)"
+            chart.y_axis.title = num_col
+            chart.x_axis.title = s_col
+    
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            chart.legend.position = "r"
+            chart.dataLabels = DataLabelList()
+            chart.dataLabels.showVal = True
+    
+            # Place chart at A5 or so, to leave space for data table
+            chart_ws.add_chart(chart, "E2")
+    
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Export Successful", f"Exported current table to {self.export_wb_path}")
+            messagebox.showinfo("Export Successful", f"Exported current table and charts to {self.export_wb_path}")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Failed to save Excel file:\n{e}")
 
