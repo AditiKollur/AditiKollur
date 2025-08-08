@@ -157,10 +157,12 @@ class ReconciliationApp:
         existing_cols = [c for c in cols if c in df.columns]
         if not existing_cols:
             return pd.Series([''] * len(df), index=df.index)
-        sliced = df[existing_cols].astype(str)
-        if isinstance(sliced, pd.Series):
-            return sliced
-        return sliced.agg(' | '.join, axis=1)
+        if len(existing_cols) == 1:
+            # Single column, ensure it's a string Series
+            return df[existing_cols[0]].astype(str)
+        else:
+            # Multiple columns, concatenate string with separator
+            return df[existing_cols].astype(str).agg(' | '.join, axis=1)
 
     def string_col_selection_page(self, initial=False):
         self.clear_gui()
@@ -274,8 +276,11 @@ class ReconciliationApp:
 
         # When filtering dfs, use full dfs and filter on _filter_key generated from all_selected_string_cols
         if self.current_filtered_keys:
-            mask_orig = self.make_filter_key(self.df_original_full, self.all_selected_string_cols).isin(self.current_filtered_keys)
-            mask_trans = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols).isin(self.current_filtered_keys)
+            # Use make_filter_key on full df to get keys, then filter rows by matching keys
+            orig_filter_keys = self.make_filter_key(self.df_original_full, self.all_selected_string_cols)
+            trans_filter_keys = self.make_filter_key(self.df_transformed_full, self.all_selected_string_cols)
+            mask_orig = orig_filter_keys.isin(self.current_filtered_keys)
+            mask_trans = trans_filter_keys.isin(self.current_filtered_keys)
             self.df_original = self.df_original_full.loc[mask_orig].copy()
             self.df_transformed = self.df_transformed_full.loc[mask_trans].copy()
         else:
@@ -445,20 +450,21 @@ class ReconciliationApp:
             chart.dataLabels = DataLabelList()
             chart.dataLabels.showVal = True
 
-            chart_ws.add_chart(chart, f"A{1 + 15*i}")
+            chart_ws.add_chart(chart, f"A{1 + i * 15}")
 
         try:
             self.export_wb.save(self.export_wb_path)
-            messagebox.showinfo("Exported", f"Exported table and charts to:\n{self.export_wb_path}")
+            messagebox.showinfo("Exported", f"Workbook saved/appended:\n{self.export_wb_path}")
+        except PermissionError:
+            messagebox.showerror("Error", "Failed to save workbook. Please close it if open and retry.")
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to save Excel file:\n{e}")
-
+            messagebox.showerror("Error", f"Failed to save workbook:\n{e}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.geometry("1100x700")
     app = ReconciliationApp(root)
-    root.geometry("950x650")
     root.mainloop()
 
 ```
