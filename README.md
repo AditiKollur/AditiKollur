@@ -437,42 +437,44 @@ class ReconciliationApp:
         chart_sheet_name = f"Chart{self.export_counter}"
 
         ws = self.export_wb.create_sheet(title=sheet_name)
+
         for r in dataframe_to_rows(self.current_table_df, index=False, header=True):
             ws.append(r)
 
-        if self.selected_numeric_cols:
-            numeric_col = self.selected_numeric_cols[0]  # Chart for first numeric col only
-            max_row = ws.max_row
+        # Create bar chart for first numeric col only
+        numeric_col = self.selected_numeric_cols[0]
 
-            try:
-                cols = list(self.current_table_df.columns)
-                idx_cat = cols.index(self.all_selected_string_cols[self.current_filter_level]) + 1 if self.current_filter_level < len(self.all_selected_string_cols) else 1
-                idx_orig = cols.index(f"{numeric_col}_orig") + 1
-                idx_trans = cols.index(f"{numeric_col}_trans") + 1
-            except Exception:
-                idx_cat = 1
-                idx_orig = 2
-                idx_trans = 3
+        try:
+            cols = list(self.current_table_df.columns)
+            idx_cat = cols.index(self.all_selected_string_cols[self.current_filter_level]) + 1 if self.current_filter_level < len(self.all_selected_string_cols) else 1
+            idx_orig = cols.index(f"{numeric_col}_orig") + 1
+            idx_trans = cols.index(f"{numeric_col}_trans") + 1
+        except Exception:
+            idx_cat = 1
+            idx_orig = 2
+            idx_trans = 3
 
-            chart = BarChart()
-            chart.title = f"{numeric_col} Orig vs Trans"
-            chart.style = 10
-            chart.y_axis.title = numeric_col
-            chart.x_axis.title = self.all_selected_string_cols[self.current_filter_level] if self.current_filter_level < len(self.all_selected_string_cols) else "Category"
+        max_row = ws.max_row
 
-            data_orig = Reference(ws, min_col=idx_orig, min_row=1, max_row=max_row)
-            data_trans = Reference(ws, min_col=idx_trans, min_row=1, max_row=max_row)
-            cats = Reference(ws, min_col=idx_cat, min_row=2, max_row=max_row)
+        chart = BarChart()
+        chart.title = f"{numeric_col} Orig vs Trans"
+        chart.style = 10
+        chart.y_axis.title = numeric_col
+        chart.x_axis.title = self.all_selected_string_cols[self.current_filter_level] if self.current_filter_level < len(self.all_selected_string_cols) else "Category"
 
-            chart.add_data(data_orig, titles_from_data=True)
-            chart.add_data(data_trans, titles_from_data=True)
-            chart.set_categories(cats)
-            chart.shape = 4
-            chart.dataLabels = DataLabelList()
-            chart.dataLabels.showVal = True
+        data_orig = Reference(ws, min_col=idx_orig, min_row=1, max_row=max_row)
+        data_trans = Reference(ws, min_col=idx_trans, min_row=1, max_row=max_row)
+        cats = Reference(ws, min_col=idx_cat, min_row=2, max_row=max_row)
 
-            chart_ws = self.export_wb.create_sheet(title=chart_sheet_name)
-            chart_ws.add_chart(chart, "A1")
+        chart.add_data(data_orig, titles_from_data=True)
+        chart.add_data(data_trans, titles_from_data=True)
+        chart.set_categories(cats)
+        chart.shape = 4
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showVal = True
+
+        chart_ws = self.export_wb.create_sheet(title=chart_sheet_name)
+        chart_ws.add_chart(chart, "A1")
 
         try:
             self.export_wb.save(self.export_wb_path)
