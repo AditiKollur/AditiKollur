@@ -96,4 +96,51 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = FileSelectorApp(root)
     root.mainloop()
+
+
+
+import re
+import pandas as pd
+
+def convert_cols(df):
+    new_cols = []
+    for col in df.columns:
+        if re.fullmatch(r"\d{6}", str(col)):  # Matches YYYYMM
+            # Convert to datetime
+            dt = pd.to_datetime(col, format="%Y%m")
+            new_col = dt.strftime("%b%y") + "_YTD"  # MMMYY_YTD
+            new_cols.append(new_col)
+        else:
+            new_cols.append(col)  # keep unchanged
+    df.columns = new_cols
+    return df
+
+
+
+import pandas as pd
+
+def calculate_mtd_lag(df):
+    # Get all YTD columns
+    ytd_cols = [col for col in df.columns if col.endswith("_YTD")]
+
+    # Sort YTD columns chronologically
+    ytd_sorted = sorted(ytd_cols, key=lambda x: pd.to_datetime(x.replace("_YTD", ""), format="%b%y"))
+
+    mtd_data = {}
+
+    # Loop starting from the 2nd index (since we need t-1 and t-2)
+    for i in range(2, len(ytd_sorted)):
+        curr_col = ytd_sorted[i]      # current YTD
+        prev_col = ytd_sorted[i-1]    # previous YTD
+        prev2_col = ytd_sorted[i-2]   # previous-2 YTD
+
+        # MTD for current month = YTD(t-1) - YTD(t-2)
+        mtd_col = curr_col.replace("_YTD", "_MTD")
+        mtd_data[mtd_col] = df[prev_col] - df[prev2_col]
+
+    # Add MTD columns to df
+    for col, values in mtd_data.items():
+        df[col] = values
+
+    return df
 ```
