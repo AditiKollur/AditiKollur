@@ -124,4 +124,46 @@ print("HMO Cust:", hmo_cust)
 print("Output Folder:", output_folder)
 print("Selected Date:", selected_date)
 
+
+
+
+
+
+
+
+import openpyxl
+
+def replace_columns_in_cv(template_path, output_path, df5):
+    # Load workbook
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active   # or wb["SheetName"] if you know the sheet name
+
+    # Find column indices for required headers
+    col_map = {}
+    for col in range(1, ws.max_column + 1):
+        header = ws.cell(row=1, column=col).value
+        if header in ["Customer", "OoI", "product namecv"]:
+            col_map[header] = col
+
+    # Replace values row by row (assuming df5 rows match CV rows)
+    for i, row in df5.iterrows():
+        excel_row = i + 2  # +2 because Excel starts at row 1, row 1 = header
+        if "Customer" in col_map:
+            ws.cell(row=excel_row, column=col_map["Customer"], value=row["cust"])
+        if "OoI" in col_map:
+            ws.cell(row=excel_row, column=col_map["OoI"], value=row["sgd"])
+        if "product namecv" in col_map:
+            ws.cell(row=excel_row, column=col_map["product namecv"], value=row["prod"])
+
+    # Save to new file
+    wb.save(output_path)
+
+
+# Example usage:
+# df5 = pd.DataFrame(...)  # your df5 with cust, sgd, prod columns
+replace_columns_in_cv("cv_template.xlsx", "cv_template_filled.xlsx", df5)
+
+
+
+
 ```
