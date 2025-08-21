@@ -1,31 +1,40 @@
 ```
 import pandas as pd
+import re
 
-def calculate_mtd_lag(df):
-    # Get all YTD columns
-    ytd_cols = [col for col in df.columns if col.endswith("_YTD")]
+def validate_con(df, col="con"):
+    # Remove spaces from column
+    df[col] = df[col].astype(str).str.replace(" ", "", regex=False)
+    
+    # Create comments column
+    df["comments"] = ""
 
-    # Sort YTD columns chronologically
-    ytd_sorted = sorted(ytd_cols, key=lambda x: pd.to_datetime(x.replace("_YTD", ""), format="%b%y"))
+    # Regex for valid pattern: 3 digits - 6 digits
+    pattern = re.compile(r"^\d{3}-\d{6}$")
 
-    mtd_data = {}
+    def check_value(val):
+        if pattern.match(val):
+            return ""  # valid, no comment
+        # check for specific issues
+        if "-" not in val:
+            return "Missing hyphen"
+        before, after = val.split("-", 1)
+        if not before.isdigit() or len(before) != 3:
+            return "Invalid: before hyphen not 3 digits"
+        if not after.isdigit() or len(after) != 6:
+            return "Invalid: after hyphen not 6 digits"
+        return "Invalid format"
 
-    # Loop from the 1st index (compare with previous)
-    for i in range(1, len(ytd_sorted)):
-        curr_col = ytd_sorted[i]      # current YTD
-        prev_col = ytd_sorted[i-1]    # previous YTD
-
-        # The MTD should be named after NEXT month of prev_col
-        prev_date = pd.to_datetime(prev_col.replace("_YTD", ""), format="%b%y")
-        next_month = (prev_date + pd.offsets.MonthEnd(1)).strftime("%b%y")
-        mtd_col = f"{next_month}_MTD"
-
-        # Values = current YTD - previous YTD
-        mtd_data[mtd_col] = df[curr_col] - df[prev_col]
-
-    # Add MTD columns to df
-    for col, values in mtd_data.items():
-        df[col] = values
-
+    df["comments"] = df[col].apply(check_value)
     return df
+
+
+# Example usage
+data = {
+    "con": ["123-456789", "12-456789", "123-45678", "123456789", "abc-123456"]
+}
+df = pd.DataFrame(data)
+
+result = validate_con(df)
+print(result)
 ```
