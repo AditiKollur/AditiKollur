@@ -3,41 +3,47 @@ import shutil
 import pandas as pd
 from openpyxl import load_workbook
 
-def update_cv_template(findf, template_path="cvtemp.xlsx", output_path="cvtemp_copy.xlsx"):
+def create_templates_by_site(findf, template_path="cvtemp.xlsx", output_prefix="cvtemp_"):
     """
-    Copies the template file and writes findf values (cust, prod, she)
-    into CustName, ProdName, OtgeropIncome columns of the copied file.
-    Keeps all formatting/macros intact.
+    For each unique sitecode in findf:
+      1. Copy the template file
+      2. Write cust, prod, she columns into CustName, ProdName, OtgeropIncome
+      3. Save as cvtemp_<sitecode>.xlsx
     """
-    # Step 1: Copy template file
-    shutil.copy(template_path, output_path)
-
-    # Step 2: Load copied file with openpyxl
-    wb = load_workbook(output_path)
-    ws = wb.active  # use first sheet (or specify by name)
-
-    # Step 3: Find the header row and column positions
-    header = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}  # assumes headers in row 1
-
-    # Ensure required columns exist in template
     required_map = {
         "cust": "CustName",
         "prod": "ProdName",
         "she": "OtgeropIncome"
     }
-    for src, tgt in required_map.items():
-        if tgt not in header:
-            raise KeyError(f"Column '{tgt}' not found in template.")
 
-    # Step 4: Write data row by row
-    for i, row in findf.iterrows():
-        excel_row = i + 2  # +2 because Excel rows start at 1 and row 1 is header
-        ws.cell(row=excel_row, column=header["CustName"], value=row["cust"])
-        ws.cell(row=excel_row, column=header["ProdName"], value=row["prod"])
-        ws.cell(row=excel_row, column=header["OtgeropIncome"], value=row["she"])
+    # Loop over each unique sitecode
+    for site in findf["sitecode"].unique():
+        site_df = findf[findf["sitecode"] == site].reset_index(drop=True)
 
-    # Step 5: Save updated file
-    wb.save(output_path)
-    print(f"✅ Updated file saved at: {output_path}")
+        output_path = f"{output_prefix}{site}.xlsx"
+        shutil.copy(template_path, output_path)
+
+        # Load workbook
+        wb = load_workbook(output_path)
+        ws = wb.active  # adjust if multiple sheets
+
+        # Find header positions (assume header in row 1)
+        header = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}
+
+        # Check that required columns exist
+        for tgt in required_map.values():
+            if tgt not in header:
+                raise KeyError(f"Column '{tgt}' not found in template.")
+
+        # Write data row by row
+        for i, row in site_df.iterrows():
+            excel_row = i + 2  # row 1 is header
+            ws.cell(row=excel_row, column=header["CustName"], value=row["cust"])
+            ws.cell(row=excel_row, column=header["ProdName"], value=row["prod"])
+            ws.cell(row=excel_row, column=header["OtgeropIncome"], value=row["she"])
+
+        # Save output
+        wb.save(output_path)
+        print(f"✅ Created template for site {site}: {output_path}")
 
 ```
