@@ -1,105 +1,87 @@
 ```
 import openpyxl
 from openpyxl import load_workbook
-from openpyxl.utils import coordinate_from_string, column_index_from_string
+from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 from copy import copy
 from pathlib import Path
 
 NORMAL_SHEETS = ["gbm", "cmb", "tm1gbm", "tm1cmb"]
 ALL_SHEETS = NORMAL_SHEETS + ["siteprod_snapshot"]
 
-def copy_sheet_with_formatting(src_ws, tgt_ws):
-    """Copy cells, styles, merged ranges, column widths and row heights."""
-    # Copy sheet-level properties (where sensible)
-    try:
-        tgt_ws.sheet_properties = copy(src_ws.sheet_properties)
-    except Exception:
-        pass
+def copy_styles_only(src_cell, tgt_cell):
+    """Copy style/formatting but not formula"""
+    if hasattr(src_cell, "font") and src_cell.font is not None:
+        tgt_cell.font = copy(src_cell.font)
+    if hasattr(src_cell, "border") and src_cell.border is not None:
+        tgt_cell.border = copy(src_cell.border)
+    if hasattr(src_cell, "fill") and src_cell.fill is not None:
+        tgt_cell.fill = copy(src_cell.fill)
+    if hasattr(src_cell, "number_format") and src_cell.number_format is not None:
+        tgt_cell.number_format = copy(src_cell.number_format)
+    if hasattr(src_cell, "alignment") and src_cell.alignment is not None:
+        tgt_cell.alignment = copy(src_cell.alignment)
+    if hasattr(src_cell, "protection") and src_cell.protection is not None:
+        tgt_cell.protection = copy(src_cell.protection)
 
+def copy_sheet_with_formatting(src_ws, tgt_ws):
+    """Full copy: values + formulas + formatting"""
     # Copy merged cells first
     for merged_range in src_ws.merged_cells.ranges:
         tgt_ws.merge_cells(str(merged_range))
 
-    # Copy cells (value/formula + style + comment + hyperlink)
     for row in src_ws.iter_rows():
         for cell in row:
-            # robust column index extraction (works for MergedCell too)
             col_letter, _ = coordinate_from_string(cell.coordinate)
             col_idx = column_index_from_string(col_letter)
             new_cell = tgt_ws.cell(row=cell.row, column=col_idx, value=cell.value)
-
-            # copy styles where available
-            if hasattr(cell, "font") and cell.font is not None:
-                new_cell.font = copy(cell.font)
-            if hasattr(cell, "border") and cell.border is not None:
-                new_cell.border = copy(cell.border)
-            if hasattr(cell, "fill") and cell.fill is not None:
-                new_cell.fill = copy(cell.fill)
-            if hasattr(cell, "number_format") and cell.number_format is not None:
-                new_cell.number_format = copy(cell.number_format)
-            if hasattr(cell, "alignment") and cell.alignment is not None:
-                new_cell.alignment = copy(cell.alignment)
-            if hasattr(cell, "protection") and cell.protection is not None:
-                new_cell.protection = copy(cell.protection)
-
-            # hyperlinks & comments
-            if getattr(cell, "hyperlink", None):
-                try:
-                    new_cell._hyperlink = copy(cell.hyperlink)
-                except Exception:
-                    pass
-            if getattr(cell, "comment", None):
-                new_cell.comment = copy(cell.comment)
+            copy_styles_only(cell, new_cell)
 
     # Copy column widths
     for col_letter, dim in src_ws.column_dimensions.items():
-        try:
-            tgt_ws.column_dimensions[col_letter].width = dim.width
-        except Exception:
-            pass
+        tgt_ws.column_dimensions[col_letter].width = dim.width
 
     # Copy row heights
     for idx, dim in src_ws.row_dimensions.items():
-        try:
-            tgt_ws.row_dimensions[idx].height = dim.height
-        except Exception:
-            pass
+        tgt_ws.row_dimensions[idx].height = dim.height
 
-def find_header_row(ws, look_for=("Booking Country", "Product Scope"), max_scan_rows=10):
-    """Scan the first `max_scan_rows` rows to find the header row containing the required headers."""
-    for r in range(1, max_scan_rows + 1):
-        headers = [c.value for c in ws[r]]
-        if all(h in headers for h in look_for):
-            return r, headers
-    return None, None
-
-def filter_rows_keep_only(ws, country):
-    """
-    Delete rows that do NOT satisfy:
-      Booking Country == country AND Product Scope == 'Y'
-    Assumes header row can be anywhere in first 10 rows (auto-detected).
-    """
-    header_row, headers = find_header_row(ws)
+def copy_filtered_data(src_ws, tgt_ws, country):
+    """Copy only filtered rows: values (no formulas) + formatting"""
+    # Find header row
+    header_row, headers = None, None
+    for r in range(1, 11):
+        row_values = [c.value for c in src_ws[r]]
+        if all(h in row_values for h in ("Booking Country", "Product Scope")):
+            header_row, headers = r, row_values
+            break
     if header_row is None:
-        # header not found; nothing to filter
         return
 
-    # determine column indexes (1-based)
-    try:
-        col_country = headers.index("Booking Country") + 1
-        col_scope = headers.index("Product Scope") + 1
-    except ValueError:
-        return
+    col_country = headers.index("Booking Country") + 1
+    col_scope = headers.index("Product Scope") + 1
 
-    # delete rows bottom-up to avoid shifting problems
-    for row_idx in range(ws.max_row, header_row, -1):
-        val_country = ws.cell(row=row_idx, column=col_country).value
-        val_scope = ws.cell(row=row_idx, column=col_scope).value
-        # normalize scope to string for robust comparison
-        scope_ok = str(val_scope).strip() == "Y" if val_scope is not None else False
-        country_ok = (val_country == country)
-        if not (country_ok and scope_ok):
-            ws.delete_rows(row_idx, 1)
+    tgt_row = 1
+    for r in range(1, src_ws.max_row + 1):
+        val_country = src_ws.cell(row=r, column=col_country).value
+        val_scope = src_ws.cell(row=r, column=col_scope).value
+
+        keep = (r <= header_row) or (
+            val_country == country and str(val_scope).strip() == "Y"
+        )
+        if keep:
+            for cell in src_ws[r]:
+                col_letter, _ = coordinate_from_string(cell.coordinate)
+                col_idx = column_index_from_string(col_letter)
+                new_cell = tgt_ws.cell(row=tgt_row, column=col_idx, value=cell.value)
+                copy_styles_only(cell, new_cell)
+            tgt_row += 1
+
+    # Copy column widths
+    for col_letter, dim in src_ws.column_dimensions.items():
+        tgt_ws.column_dimensions[col_letter].width = dim.width
+
+    # Copy row heights
+    for idx, dim in src_ws.row_dimensions.items():
+        tgt_ws.row_dimensions[idx].height = dim.height
 
 def generate_country_files(input_file, countries, output_dir="output_files"):
     input_file = Path(input_file)
@@ -111,24 +93,18 @@ def generate_country_files(input_file, countries, output_dir="output_files"):
     for country in countries:
         print(f"Processing: {country}")
         tgt_wb = openpyxl.Workbook()
-        # remove default sheet
-        default = tgt_wb.active
-        tgt_wb.remove(default)
+        tgt_wb.remove(tgt_wb.active)
 
-        # Create sheets in the same order as ALL_SHEETS
         for sheet_name in ALL_SHEETS:
             if sheet_name not in src_wb.sheetnames:
-                print(f"Warning: {sheet_name} not found in source workbook; skipping.")
                 continue
             src_ws = src_wb[sheet_name]
             tgt_ws = tgt_wb.create_sheet(title=sheet_name)
-            copy_sheet_with_formatting(src_ws, tgt_ws)
 
             if sheet_name in NORMAL_SHEETS:
-                filter_rows_keep_only(tgt_ws, country)
-
-            if sheet_name == "siteprod_snapshot":
-                # set B2 to country (preserve formatting)
+                copy_filtered_data(src_ws, tgt_ws, country)
+            else:  # siteprod_snapshot
+                copy_sheet_with_formatting(src_ws, tgt_ws)
                 tgt_ws["B2"].value = country
 
         out_path = output_dir / f"{country}.xlsx"
