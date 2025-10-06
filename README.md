@@ -1,101 +1,130 @@
 ```
-import re
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+import numpy as np
+from itertools import combinations
+from docx import Document
+from docx.shared import Pt
+from datetime import datetime
 
-# ---------------- Example DataFrame (replace with your actual one) ----------------
-df = pd.DataFrame({
-    "custid": [101, 102, 103],
-    "gho": ["A", "B", "C"],
-    "att": ["X", "Y", "Z"],
-    "prd": ["P1", "P2", "P3"],
-    "values": [100, 200, 300]
-})
-# -------------------------------------------------------------------------------
+# --------------------------
+# SAMPLE DATA (replace with your own)
+# --------------------------
+np.random.seed(42)
+products = ['ProdA', 'ProdB', 'ProdC']
+subproducts = ['Sub1', 'Sub2']
+regions = ['North', 'South', 'East']
+segments = ['Retail', 'Wholesale']
 
-# ---------------- File and sheet names ----------------
-input_file = "your_file.xlsx"
-output_file = "your_file_refreshed.xlsx"
-sheet_name = "Gb"
-# -------------------------------------------------------------------------------
+rows = []
+for _ in range(200):
+    rows.append({
+        'Product': np.random.choice(products),
+        'Subproduct': np.random.choice(subproducts),
+        'Region': np.random.choice(regions),
+        'Segment': np.random.choice(segments),
+        'TRI': round(np.random.normal(100, 20), 2)  # numeric metric
+    })
 
-# Load workbook and sheet
-wb = load_workbook(input_file)
-ws = wb[sheet_name]
+df = pd.DataFrame(rows)
 
-start_row = 18
-nrows = len(df)
-last_data_row = start_row + nrows - 1 if nrows > 0 else start_row - 1
+# --------------------------
+# FUNCTION TO GENERATE COMMENTARY REPORT
+# --------------------------
+def generate_tri_commentary_report(
+    df,
+    group_cols=['Product', 'Subproduct', 'Region', 'Segment'],
+    metric_col='TRI',
+    out_path='tri_commentary.docx'
+):
+    """Generates a Word report summarizing TRI commentaries for all group combinations."""
 
-# Columns to replace with df
-col_map = {"custid": "A", "gho": "C", "att": "D", "prd": "E", "values": "F"}
+    # Ensure required columns exist
+    missing = [c for c in group_cols + [metric_col] if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns in DataFrame: {missing}")
 
-# Formula columns to drag
-formula_cols = ["B", "G", "H", "I", "J", "K", "L", "M"]
+    # Overall statistics
+    overall_mean = df[metric_col].mean()
+    overall_std = df[metric_col].std(ddof=0) or 1.0
 
-# Regex to detect A1-style references (e.g. A18, $A$18, A$18)
-cell_ref_re = re.compile(r'(\$?[A-Za-z]{1,3})(\$?)(\d+)')
+    # Word document setup
+    doc = Document()
+    doc.styles['Normal'].font.name = 'Calibri'
+    doc.styles['Normal'].font.size = Pt(11)
 
-def shift_formula_rows(formula: str, row_offset: int) -> str:
-    """
-    Shift only A1-style cell references by `row_offset`.
-    Absolute rows (with $) remain unchanged.
-    """
-    def _repl(m):
-        col_part = m.group(1)      # e.g. A or $A
-        row_dollar = m.group(2)    # '' or '$'
-        rownum = int(m.group(3))
-        if row_dollar == '$':      # absolute row -> unchanged
-            new_row = rownum
-        else:
-            new_row = rownum + row_offset
-        return f"{col_part}{row_dollar}{new_row}"
-    return cell_ref_re.sub(_repl, formula)
+    doc.add_heading('TRI Commentary Report', level=1)
+    doc.add_paragraph(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    doc.add_paragraph(f"Overall {metric_col} Mean = {overall_mean:.2f} | Std Dev = {overall_std:.2f}")
+    doc.add_paragraph('---')
+
+    # Generate all possible combinations of grouping columns
+    for r in range(1, len(group_cols) + 1):
+        for combo in combinations(group_cols, r):
+            combo_name = ', '.join(combo)
+            doc.add_heading(f"Group by: {combo_name}", level=2)
+
+            # Aggregate metrics
+            grouped = (
+                df.groupby(list(combo))[metric_col]
+                .agg(['count', 'mean', 'median', 'std'])
+                .reset_index()
+            )
+            grouped['std'] = grouped['std'].fillna(0)
+
+            commentaries = []
+
+            for _, row in grouped.iterrows():
+                group_vals = ', '.join([f"{col}={row[col]}" for col in combo])
+                cnt, mean_val, med_val, std_val = int(row['count']), row['mean'], row['median'], row['std']
+
+                # Compute difference vs overall
+                pct_diff = (mean_val - overall_mean) / overall_mean * 100
+                zscore = (mean_val - overall_mean) / overall_std
+
+                # Qualitative interpretation
+                if zscore >= 1.5:
+                    comparison = "much higher than"
+                elif zscore >= 0.5:
+                    comparison = "higher than"
+                elif zscore > -0.5:
+                    comparison = "around the same as"
+                elif zscore > -1.5:
+                    comparison = "lower than"
+                else:
+                    comparison = "much lower than"
+
+                text = (
+                    f"{group_vals}: n={cnt}, mean={mean_val:.2f}, median={med_val:.2f}, std={std_val:.2f}. "
+                    f"This is {comparison} the overall mean ({overall_mean:.2f}), "
+                    f"a {pct_diff:+.1f}% difference (z={zscore:.2f})."
+                )
+
+                if cnt <= 3:
+                    text += " (Small sample size — interpret cautiously.)"
+
+                commentaries.append((mean_val, text))
+
+            # Sort by mean TRI (descending)
+            commentaries.sort(key=lambda x: -x[0])
+
+            # Add top & bottom highlights
+            doc.add_paragraph("Top Highlights:", style='List Bullet')
+            for mean_val, text in commentaries[:5]:
+                doc.add_paragraph(text, style='List Bullet')
+
+            doc.add_paragraph("Bottom Highlights:", style='List Bullet')
+            for mean_val, text in commentaries[-5:]:
+                doc.add_paragraph(text, style='List Number')
+
+            doc.add_page_break()
+
+    doc.save(out_path)
+    print(f"✅ TRI Commentary report saved to: {out_path}")
 
 
-# 1️⃣ Save template formulas from row 18 before clearing
-templates = {}
-for col in formula_cols:
-    templates[col] = ws[f"{col}{start_row}"].value
+# --------------------------
+# RUN FUNCTION
+# --------------------------
+generate_tri_commentary_report(df)
 
-# 2️⃣ Clear old data
-max_row = ws.max_row
-for r in range(start_row, max_row + 1):
-    for col_idx in range(1, 14):  # A–M
-        col_letter = get_column_letter(col_idx)
-        if col_letter in ["A", "C", "D", "E", "F"]:
-            ws.cell(row=r, column=col_idx).value = None
-        elif col_letter in formula_cols and r > start_row:
-            ws.cell(row=r, column=col_idx).value = None
-
-# 3️⃣ Write DataFrame values into A, C, D, E, F
-for i, row in df.iterrows():
-    excel_row = start_row + i
-    for col_name, col_letter in col_map.items():
-        ws[f"{col_letter}{excel_row}"] = row[col_name]
-
-# 4️⃣ Ensure template formulas remain in row 18
-for col in formula_cols:
-    tpl = templates.get(col)
-    if tpl is not None:
-        ws[f"{col}{start_row}"].value = tpl
-
-# 5️⃣ Drag formulas down to last_data_row
-for col in formula_cols:
-    tpl = templates.get(col)
-    if isinstance(tpl, str) and tpl.startswith("=") and nrows > 0:
-        for r in range(start_row + 1, last_data_row + 1):
-            offset = r - start_row
-            ws[f"{col}{r}"].value = shift_formula_rows(tpl, offset)
-
-# 6️⃣ Clear rows below last_data_row (A–M only)
-if last_data_row < max_row:
-    for r in range(last_data_row + 1, max_row + 1):
-        for col_idx in range(1, 14):
-            ws.cell(row=r, column=col_idx).value = None
-
-# Save refreshed workbook
-wb.save(output_file)
-print(f"✅ Sheet refreshed and saved to {output_file}")
 ```
