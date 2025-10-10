@@ -4,131 +4,111 @@ from datetime import datetime, timedelta
 from docx import Document
 
 def excel_serial_to_date(serial):
-    """
-    Convert Excel serial date (e.g., 45504) to datetime.
-    Excel's day 1 = 1899-12-30 (for Windows default date system).
-    """
-    base_date = datetime(1899, 12, 30)
-    return base_date + timedelta(days=int(serial))
+    """Convert Excel serial date number to datetime"""
+    return datetime(1899, 12, 30) + timedelta(days=int(serial))
 
-def generate_tri_commentary(df, output_path='TRI_Commentary.docx'):
-    # Convert Excel serials to datetime
-    df['_date'] = df['Year-Month'].apply(excel_serial_to_date)
+def generate_tri_commentary(df):
+    # Convert Excel serial to datetime
+    df["Date"] = df["Year-Month"].apply(excel_serial_to_date)
+    df["Year"] = df["Date"].dt.year
+    df["Month"] = df["Date"].dt.month
 
-    # Extract Year and Month
-    df['Year'] = df['_date'].dt.year
-    df['Month'] = df['_date'].dt.month
+    # Identify current and previous months
+    current_month = df["Month"].max()
+    current_year = df.loc[df["Month"] == current_month, "Year"].max()
 
-    # Determine current and previous year based on latest date
-    curr_date = df['_date'].max()
-    curr_year, curr_month = curr_date.year, curr_date.month
-    prev_year = curr_year - 1
+    prev_year = current_year - 1
+    prev_month = current_month - 1 if current_month > 1 else 12
+    prev_month_year = current_year if current_month > 1 else current_year - 1
 
-    # Define YTD filters
-    curr_ytd = (df['Year'] == curr_year) & (df['Month'] <= curr_month)
-    prev_ytd = (df['Year'] == prev_year) & (df['Month'] <= curr_month)
+    # Filter data
+    current_data = df[(df["Month"] == current_month) & (df["Year"] == current_year)]
+    prev_year_data = df[(df["Month"] == current_month) & (df["Year"] == prev_year)]
+    prev_month_data = df[(df["Month"] == prev_month) & (df["Year"] == prev_month_year)]
 
-    # --- (1) Managed TRI Total + YoY change ---
-    tri_col = 'Total Relationship Income ($M)'
-    curr_tri = df.loc[curr_ytd, tri_col].sum()
-    prev_tri = df.loc[prev_ytd, tri_col].sum()
-    yoy = ((curr_tri - prev_tri) / prev_tri * 100) if prev_tri else None
+    # Managed TRI totals
+    current_tri = current_data["Total Relationship Income ($M)"].sum()
+    prev_year_tri = prev_year_data["Total Relationship Income ($M)"].sum()
+    prev_month_tri = prev_month_data["Total Relationship Income ($M)"].sum()
 
-    # --- (2) Segment-level growth/fall ---
-    seg_curr = df.loc[curr_ytd].groupby('CIB SME Segment')[tri_col].sum()
-    seg_prev = df.loc[prev_ytd].groupby('CIB SME Segment')[tri_col].sum()
+    yoy_change = ((current_tri - prev_year_tri) / prev_year_tri * 100) if prev_year_tri != 0 else 0
+    mom_change = current_tri - prev_month_tri  # absolute change, not %
 
-    seg_df = pd.concat([seg_curr, seg_prev], axis=1, keys=['Current', 'Previous']).fillna(0)
-    seg_df['YoY%'] = seg_df.apply(
-        lambda r: ((r['Current'] - r['Previous']) / r['Previous'] * 100) if r['Previous'] else None, axis=1
-    )
-    seg_df['ChangeType'] = seg_df.apply(
-        lambda r: 'Growth' if r['Current'] > r['Previous'] else 'Fall' if r['Current'] < r['Previous'] else 'No Change', axis=1
-    )
+    # Segment-level analysis
+    seg_current = current_data.groupby("CIB SME Segment")["Total Relationship Income ($M)"].sum()
+    seg_prev_year = prev_year_data.groupby("CIB SME Segment")["Total Relationship Income ($M)"].sum()
+    seg_prev_month = prev_month_data.groupby("CIB SME Segment")["Total Relationship Income ($M)"].sum()
 
-    # Identify top segment
-    seg_sorted = seg_df[seg_df['YoY%'].notna()].sort_values('YoY%', ascending=False)
-    if not seg_sorted.empty:
-        top_segment = seg_sorted.index[0]
-        top_seg_yoy = seg_sorted.iloc[0]['YoY%']
-    else:
-        top_segment, top_seg_yoy = None, None
+    seg_df = pd.DataFrame({
+        "Current": seg_current,
+        "Prev_Year": seg_prev_year,
+        "Prev_Month": seg_prev_month
+    }).fillna(0)
 
-    # --- (3) Top 2 Products contributing to top segment ---
-    if top_segment:
-        curr_top_seg = df.loc[curr_ytd & (df['CIB SME Segment'] == top_segment)]
-        prod_curr = curr_top_seg.groupby('Product')[tri_col].sum().sort_values(ascending=False)
-        top_products = prod_curr.head(2).index.tolist()
+    seg_df["YoY%"] = ((seg_df["Current"] - seg_df["Prev_Year"]) / seg_df["Prev_Year"].replace(0, pd.NA)) * 100
+    seg_df["MoM_Change($M)"] = seg_df["Current"] - seg_df["Prev_Month"]
 
-        prod_prev = df.loc[prev_ytd & (df['CIB SME Segment'] == top_segment)]
-        prod_prev = prod_prev.groupby('Product')[tri_col].sum()
+    # Pick top segment based on higher relative growth (YoY% or MoM change)
+    seg_df["Relative_Score"] = (seg_df["YoY%"].fillna(0) + seg_df["MoM_Change($M)"].fillna(0))
+    top_segment = seg_df["Relative_Score"].idxmax()
+    top_segment_yoy = seg_df.loc[top_segment, "YoY%"]
+    top_segment_mom = seg_df.loc[top_segment, "MoM_Change($M)"]
 
-        product_contrib = []
-        for p in top_products:
-            curr_val = prod_curr.get(p, 0)
-            prev_val = prod_prev.get(p, 0)
-            yoy_prod = ((curr_val - prev_val) / prev_val * 100) if prev_val else None
-            product_contrib.append((p, curr_val, yoy_prod))
-    else:
-        product_contrib = []
+    # Product-level within top segment
+    prod_current = current_data[current_data["CIB SME Segment"] == top_segment]
+    prod_prev_year = prev_year_data[prev_year_data["CIB SME Segment"] == top_segment]
+    prod_prev_month = prev_month_data[prev_month_data["CIB SME Segment"] == top_segment]
 
-    # --- Generate commentary text ---
-    month_label = curr_date.strftime('%B %Y')
+    prod_curr_agg = prod_current.groupby("Product")["Total Relationship Income ($M)"].sum()
+    prod_prev_year_agg = prod_prev_year.groupby("Product")["Total Relationship Income ($M)"].sum()
+    prod_prev_month_agg = prod_prev_month.groupby("Product")["Total Relationship Income ($M)"].sum()
 
-    # 1️⃣ Managed TRI
-    para1 = (
-        f"Managed TRI of ${curr_tri:,.2f}M in {month_label} YTD, "
-        f"{'change from last year: N/A' if yoy is None else f'change from last year, {yoy:+.1f}% YoY.'}"
-    )
+    prod_df = pd.DataFrame({
+        "Current": prod_curr_agg,
+        "Prev_Year": prod_prev_year_agg,
+        "Prev_Month": prod_prev_month_agg
+    }).fillna(0)
 
-    # 2️⃣ Segment summary
-    seg_summary = "; ".join([
-        f"{seg}: {row.ChangeType} ({'N/A' if pd.isna(row['YoY%']) else f'{row['YoY%']:+.1f}%'} YoY)"
-        for seg, row in seg_df.iterrows()
-    ])
+    prod_df["YoY%"] = ((prod_df["Current"] - prod_df["Prev_Year"]) / prod_df["Prev_Year"].replace(0, pd.NA)) * 100
+    prod_df["MoM_Change($M)"] = prod_df["Current"] - prod_df["Prev_Month"]
+    prod_df["Relative_Score"] = prod_df["YoY%"].fillna(0) + prod_df["MoM_Change($M)"].fillna(0)
 
-    if top_segment:
-        top_seg_text = (
-            f"Primarily the '{top_segment}' segment showing {top_seg_yoy:+.1f}% YoY growth, "
-            f"driven by products "
-            f"{' and '.join([f'{p} ({y:+.1f}% YoY)' if y is not None else f'{p} (N/A)' for p,_,y in product_contrib])}."
-        )
-    else:
-        top_seg_text = "No segment growth data available."
+    top_products = prod_df.sort_values("Relative_Score", ascending=False).head(2).reset_index()
 
-    para2 = f"Segments - Growth/Fall across all client segments: {seg_summary}. {top_seg_text}"
-
-    # --- Write to Word file ---
+    # Create commentary text
     doc = Document()
-    doc.add_heading(f"TRI Commentary — {month_label}", level=1)
+    month_name = datetime(1900, current_month, 1).strftime("%B")
+
+    para1 = (
+        f"Managed TRI of ${current_tri:.2f}M in {month_name} {current_year}, "
+        f"YoY change: {yoy_change:+.1f}%, MoM change: {mom_change:+.2f}M "
+        f"vs {month_name} {prev_year} and {datetime(1900, prev_month, 1).strftime('%B')} {prev_month_year} respectively."
+    )
+
+    para2 = (
+        f"Segments – Growth/Fall across all client segments. "
+        f"Top-performing CIB SME segment: '{top_segment}' "
+        f"with YoY change {top_segment_yoy:+.1f}% and MoM change {top_segment_mom:+.2f}M. "
+        f"Top contributing products: "
+        f"{top_products.loc[0, 'Product']} (${top_products.loc[0, 'Current']:.2f}M, "
+        f"YoY {top_products.loc[0, 'YoY%']:+.1f}%, MoM {top_products.loc[0, 'MoM_Change($M)']:+.2f}M), and "
+        f"{top_products.loc[1, 'Product']} (${top_products.loc[1, 'Current']:.2f}M, "
+        f"YoY {top_products.loc[1, 'YoY%']:+.1f}%, MoM {top_products.loc[1, 'MoM_Change($M)']:+.2f}M)."
+    )
+
     doc.add_paragraph(para1)
     doc.add_paragraph(para2)
-    doc.save(output_path)
+    file_path = "TRI_Commentary.docx"
+    doc.save(file_path)
+    print(f"✅ Commentary generated and saved as {file_path}")
 
-    print(f"✅ Commentary file created: {output_path}")
-    print("\n--- Paragraph 1 ---\n", para1)
-    print("\n--- Paragraph 2 ---\n", para2)
+    return para1, para2, seg_df, prod_df
 
 
-# Example usage:
-# ------------------------------------------
-data = [
-    [45504,'Asia','India',False,'CBR1','BL1','ProductA','SME Large',12.5],
-    [45504,'United States','USA',False,'CBR1','BL1','ProductB','SME Small',8.0],
-    [45869,'Asia','India',False,'CBR1','BL1','ProductA','SME Large',15.0],
-    [45869,'United States','USA',False,'CBR1','BL1','ProductB','SME Small',9.5],
-    [45869,'Europe','UK',False,'CBR2','BL2','ProductD','SME Large',7.0],
-    [45535,'Asia','India',False,'CBR1','BL1','ProductA','SME Large',10.0],
-    [45535,'United States','USA',False,'CBR1','BL1','ProductB','SME Small',9.0],
-    [45900,'Asia','India',False,'CBR1','BL1','ProductA','SME Large',11.0],
-    [45900,'United States','USA',False,'CBR1','BL1','ProductB','SME Small',8.5],
-    [45900,'Europe','UK',False,'CBR2','BL2','ProductD','SME Large',6.0],
-]
+# Example:
+# df = pd.read_excel("your_file.xlsx")
+# generate_tri_commentary(df)
 
-df = pd.DataFrame(data, columns=[
-    'Year-Month','Managed region','Managed Country','Multi Jurisdiction','CBR',
-    'Business Line','Product','CIB SME Segment','Total Relationship Income ($M)'
-])
 
-generate_tri_commentary(df)
+
 ```
