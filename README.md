@@ -45,23 +45,52 @@ def generate_tri_commentary_yoy(df):
     top_segment_yoy_num = seg_df.loc[top_segment, "YoY_Change"]
     top_segment_yoy_pct = seg_df.loc[top_segment, "YoY%"]
 
-    # --- Product-level comparison for top segment ---
-    prod_current = current_data[current_data["CIB SME Segment"] == top_segment]
-    prod_prev = prev_year_data[prev_year_data["CIB SME Segment"] == top_segment]
+    # --- Business Line-level comparison for top segment ---
+    bl_current = current_data[current_data["CIB SME Segment"] == top_segment]
+    bl_prev = prev_year_data[prev_year_data["CIB SME Segment"] == top_segment]
 
-    prod_curr_agg = prod_current.groupby("Product", dropna=False)["Total Relationship Income ($M)"].sum()
-    prod_prev_agg = prod_prev.groupby("Product", dropna=False)["Total Relationship Income ($M)"].sum()
+    bl_curr_agg = bl_current.groupby("Business Line", dropna=False)["Total Relationship Income ($M)"].sum()
+    bl_prev_agg = bl_prev.groupby("Business Line", dropna=False)["Total Relationship Income ($M)"].sum()
 
-    prod_df = pd.concat([prod_curr_agg, prod_prev_agg], axis=1, keys=["Current", "Prev_Year"]).fillna(0)
-    prod_df["YoY_Change"] = prod_df["Current"] - prod_df["Prev_Year"]
-    prod_df["YoY%"] = prod_df.apply(
+    bl_df = pd.concat([bl_curr_agg, bl_prev_agg], axis=1, keys=["Current", "Prev_Year"]).fillna(0)
+    bl_df["YoY_Change"] = bl_df["Current"] - bl_df["Prev_Year"]
+    bl_df["YoY%"] = bl_df.apply(
         lambda x: ((x["YoY_Change"] / x["Prev_Year"]) * 100) if x["Prev_Year"] != 0 else 0, axis=1
     )
 
-    # --- Top 2 products ---
-    top_products = prod_df.sort_values("YoY_Change", ascending=False).head(2).reset_index()
+    # --- Top 2 Business Lines ---
+    top_bl = bl_df.sort_values("YoY_Change", ascending=False).head(2).reset_index()
 
-    # --- Build commentary ---
+    # --- Region-level analysis ---
+    region_current = current_data.groupby("Managed region", dropna=False)["Total Relationship Income ($M)"].sum()
+    region_prev = prev_year_data.groupby("Managed region", dropna=False)["Total Relationship Income ($M)"].sum()
+
+    region_df = pd.concat([region_current, region_prev], axis=1, keys=["Current", "Prev_Year"]).fillna(0)
+    region_df["YoY_Change"] = region_df["Current"] - region_df["Prev_Year"]
+    region_df["YoY%"] = region_df.apply(
+        lambda x: ((x["YoY_Change"] / x["Prev_Year"]) * 100) if x["Prev_Year"] != 0 else 0, axis=1
+    )
+    region_df = region_df.sort_values("YoY_Change", ascending=False).reset_index()
+
+    # --- Top 5 regions ---
+    top5_regions = region_df.head(5)
+
+    # --- Top 2 countries within top 2 regions ---
+    region_country_current = current_data.groupby(["Managed region", "Managed Country"], dropna=False)["Total Relationship Income ($M)"].sum()
+    region_country_prev = prev_year_data.groupby(["Managed region", "Managed Country"], dropna=False)["Total Relationship Income ($M)"].sum()
+
+    region_country_df = pd.concat([region_country_current, region_country_prev], axis=1, keys=["Current", "Prev_Year"]).fillna(0)
+    region_country_df["YoY_Change"] = region_country_df["Current"] - region_country_df["Prev_Year"]
+    region_country_df["YoY%"] = region_country_df.apply(
+        lambda x: ((x["YoY_Change"] / x["Prev_Year"]) * 100) if x["Prev_Year"] != 0 else 0, axis=1
+    )
+    region_country_df = region_country_df.reset_index()
+
+    def top_countries(region_name):
+        sub = region_country_df[region_country_df["Managed region"] == region_name]
+        return sub.sort_values("YoY_Change", ascending=False).head(2)[["Managed Country", "YoY_Change", "YoY%"]]
+
+    # --- Build commentary text ---
     doc = Document()
     month_name = datetime(1900, current_month, 1).strftime("%B")
 
@@ -74,19 +103,37 @@ def generate_tri_commentary_yoy(df):
         f"Segments – Growth/Fall across all client segments. "
         f"Top-performing CIB SME segment: '{top_segment}' with YoY change of "
         f"${top_segment_yoy_num:+.2f}M ({top_segment_yoy_pct:+.1f}%). "
-        f"Top contributing products: "
-        f"{top_products.loc[0, 'Product']} (${top_products.loc[0, 'Current']:.2f}M, "
-        f"YoY change ${top_products.loc[0, 'YoY_Change']:+.2f}M, {top_products.loc[0, 'YoY%']:+.1f}%), "
-        f"and {top_products.loc[1, 'Product']} (${top_products.loc[1, 'Current']:.2f}M, "
-        f"YoY change ${top_products.loc[1, 'YoY_Change']:+.2f}M, {top_products.loc[1, 'YoY%']:+.1f}%)."
+        f"Top contributing Business Lines: "
+        f"{top_bl.loc[0, 'Business Line']} (${top_bl.loc[0, 'Current']:.2f}M, "
+        f"YoY change ${top_bl.loc[0, 'YoY_Change']:+.2f}M, {top_bl.loc[0, 'YoY%']:+.1f}%), "
+        f"and {top_bl.loc[1, 'Business Line']} (${top_bl.loc[1, 'Current']:.2f}M, "
+        f"YoY change ${top_bl.loc[1, 'YoY_Change']:+.2f}M, {top_bl.loc[1, 'YoY%']:+.1f}%)."
     )
 
+    # --- Third commentary (Region growth summary) ---
+    top1, top2, top3, top4, top5 = top5_regions["Managed region"].tolist()
+    c1 = top_countries(top1)
+    c2 = top_countries(top2)
+
+    para3 = (
+        f"Regions – Strong growth in {top1} (${top5_regions.loc[0, 'YoY_Change']:+.2f}M, "
+        f"{top5_regions.loc[0, 'YoY%']:+.1f}%) led by {c1.iloc[0, 0]} and {c1.iloc[1, 0]}, "
+        f"followed by {top2} (${top5_regions.loc[1, 'YoY_Change']:+.2f}M, "
+        f"{top5_regions.loc[1, 'YoY%']:+.1f}%) driven by {c2.iloc[0, 0]} and {c2.iloc[1, 0]}. "
+        f"Accompanied by steady growth in {top3} (${top5_regions.loc[2, 'YoY_Change']:+.2f}M, "
+        f"{top5_regions.loc[2, 'YoY%']:+.1f}%), {top4} (${top5_regions.loc[3, 'YoY_Change']:+.2f}M, "
+        f"{top5_regions.loc[3, 'YoY%']:+.1f}%), and {top5} (${top5_regions.loc[4, 'YoY_Change']:+.2f}M, "
+        f"{top5_regions.loc[4, 'YoY%']:+.1f}%)."
+    )
+
+    # --- Add paragraphs ---
     doc.add_paragraph(para1)
     doc.add_paragraph(para2)
+    doc.add_paragraph(para3)
 
-    # --- Save commentary to Word ---
-    file_path = "TRI_Commentary_YoY_with_Percentage.docx"
+    # --- Save the Word file ---
+    file_path = "TRI_Commentary_YoY_Final.docx"
     doc.save(file_path)
     print(f"✅ Commentary generated and saved as {file_path}")
 
-    return para1, para2, seg_df, prod_df
+    return para1, para2, para3, seg_df, bl_df, region_df
