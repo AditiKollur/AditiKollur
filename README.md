@@ -5,35 +5,43 @@ from datetime import datetime
 from docx import Document
 
 def generate_tri_commentary(df):
-    # Convert Excel-style serial date to datetime
+    # --- Step 1: Convert Excel-style serial date to datetime ---
     df['Date'] = pd.to_datetime('1899-12-30') + pd.to_timedelta(df['Year-Month'], unit='D')
     df['Year'] = df['Date'].dt.year
     df['Month'] = df['Date'].dt.month
     df['MonthName'] = df['Date'].dt.strftime('%B')
 
-    # --- Combine Europe + UK RFB/NRFB into a single "Europe" bucket ---
+    # --- Step 2: Map UK variants into Europe (combined) ---
     df['Managed region'] = df['Managed region'].replace(
-        {'United Kingdom - RFB': 'Europe', 'United Kingdom - NRFB': 'Europe'}
+        {
+            'United Kingdom - RFB': 'Europe (Combined)',
+            'United Kingdom - NRFB': 'Europe (Combined)',
+            'Europe': 'Europe (Combined)',
+        }
     )
-    # Aggregate again so that Europe now includes UK variants
-    df = df.groupby(
-        ['Year', 'Month', 'MonthName', 'Managed region', 'Managed Country', 'Multi Jurisdiction',
-         'CBR', 'Business Line', 'CIB SME Segment'],
-        as_index=False
-    )['Total Relationship Income ($M)'].sum()
 
-    # Detect current and previous year + latest month
+    # --- Step 3: Re-aggregate after merging ---
+    df = (
+        df.groupby(
+            [
+                'Year', 'Month', 'MonthName', 'Managed region', 'Managed Country',
+                'Multi Jurisdiction', 'CBR', 'Business Line', 'CIB SME Segment'
+            ],
+            as_index=False
+        )['Total Relationship Income ($M)'].sum()
+    )
+
+    # --- Step 4: Identify current and previous year & month ---
     current_year = df['Year'].max()
     previous_year = current_year - 1
     current_month = df.loc[df['Year'] == current_year, 'Month'].max()
     current_month_name = df.loc[df['Month'] == current_month, 'MonthName'].iloc[0]
 
-    # Filter current and previous year-month
     current_df = df[(df['Year'] == current_year) & (df['Month'] == current_month)]
     prev_df = df[(df['Year'] == previous_year) & (df['Month'] == current_month)]
 
     # -----------------------------------
-    # 1️⃣ Managed TRI Overall
+    # 1️⃣ Managed TRI (Overall)
     # -----------------------------------
     total_current = current_df['Total Relationship Income ($M)'].sum()
     total_prev = prev_df['Total Relationship Income ($M)'].sum()
@@ -84,24 +92,21 @@ def generate_tri_commentary(df):
     top2_countries = get_top_countries(top2['Managed region'])
 
     # -----------------------------------
-    # 4️⃣ Write Word File
+    # 4️⃣ Word Commentary Output
     # -----------------------------------
     doc = Document()
     doc.add_heading(f"TRI Commentary - {current_month_name} {current_year}", level=1)
 
-    # Managed TRI
     doc.add_paragraph(
         f"1. Managed TRI of ${total_current:.2f}M in {current_month_name} {current_year}, "
         f"representing a YoY change of ${yoy_change:.2f}M ({yoy_percent:.2f}%) from last year."
     )
 
-    # Segment
     doc.add_paragraph(
         f"2. Segments - Growth observed across all client segments, primarily in {top_seg['CIB SME Segment']} "
         f"(YoY change ${top_seg['YoY_change']:.2f}M, {top_seg['YoY_%']:.2f}%), driven by {top_products}."
     )
 
-    # Region
     reg_text = (
         f"3. Regions - Strong growth in {top1['Managed region']} "
         f"(YoY change ${top1['YoY_change']:.2f}M, {top1['YoY_%']:.2f}%) led by {top1_countries}, "
