@@ -1,131 +1,112 @@
 ```
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from docx import Document
 
+# --------------------------
+# Function to generate TRI commentary
+# --------------------------
 def generate_tri_commentary(df):
-    # --- Step 1: Convert Excel-style serial date to datetime ---
-    df['Date'] = pd.to_datetime('1899-12-30') + pd.to_timedelta(df['Year-Month'], unit='D')
-    df['Year'] = df['Date'].dt.year
-    df['Month'] = df['Date'].dt.month
-    df['MonthName'] = df['Date'].dt.strftime('%B')
+    # Convert Excel date serials to datetime
+    df['Year-Month'] = pd.to_datetime(df['Year-Month'], unit='d', origin='1899-12-30')
+    df['Year'] = df['Year-Month'].dt.year
+    df['Month'] = df['Year-Month'].dt.month_name().str[:3]
 
-    # --- Step 2: Map UK variants into Europe (combined) ---
-    df['Managed region'] = df['Managed region'].replace(
-        {
-            'United Kingdom - RFB': 'Europe (Combined)',
-            'United Kingdom - NRFB': 'Europe (Combined)',
-            'Europe': 'Europe (Combined)',
-        }
-    )
+    # Treat "United Kingdom - RFB" and "United Kingdom - NRFB" as part of "Europe"
+    df['Managed Region'] = df['Managed Region'].replace({
+        'United Kingdom - RFB': 'Europe',
+        'United Kingdom - NRFB': 'Europe'
+    })
 
-    # --- Step 3: Re-aggregate after merging ---
-    df = (
-        df.groupby(
-            [
-                'Year', 'Month', 'MonthName', 'Managed region', 'Managed Country',
-                'Multi Jurisdiction', 'CBR', 'Business Line', 'CIB SME Segment'
-            ],
-            as_index=False
-        )['Total Relationship Income ($M)'].sum()
-    )
-
-    # --- Step 4: Identify current and previous year & month ---
+    # Identify current and previous year based on latest month
     current_year = df['Year'].max()
-    previous_year = current_year - 1
-    current_month = df.loc[df['Year'] == current_year, 'Month'].max()
-    current_month_name = df.loc[df['Month'] == current_month, 'MonthName'].iloc[0]
+    current_month = df.loc[df['Year'] == current_year, 'Year-Month'].max().month
+    prev_year = current_year - 1
 
-    current_df = df[(df['Year'] == current_year) & (df['Month'] == current_month)]
-    prev_df = df[(df['Year'] == previous_year) & (df['Month'] == current_month)]
+    month_name = datetime(1900, current_month, 1).strftime('%B')
 
-    # -----------------------------------
-    # 1️⃣ Managed TRI (Overall)
-    # -----------------------------------
-    total_current = current_df['Total Relationship Income ($M)'].sum()
-    total_prev = prev_df['Total Relationship Income ($M)'].sum()
-    yoy_change = total_current - total_prev
-    yoy_percent = (yoy_change / total_prev * 100) if total_prev != 0 else np.nan
+    # Aggregate TRI by region, segment, and business line
+    df_curr = df[(df['Year'] == current_year) & (df['Year-Month'].dt.month == current_month)]
+    df_prev = df[(df['Year'] == prev_year) & (df['Year-Month'].dt.month == current_month)]
 
-    # -----------------------------------
-    # 2️⃣ Segment Commentary
-    # -----------------------------------
-    seg_curr = current_df.groupby('CIB SME Segment')['Total Relationship Income ($M)'].sum().reset_index()
-    seg_prev = prev_df.groupby('CIB SME Segment')['Total Relationship Income ($M)'].sum().reset_index()
-    seg_merge = pd.merge(seg_curr, seg_prev, on='CIB SME Segment', suffixes=('_curr', '_prev'))
-    seg_merge['YoY_change'] = seg_merge['Total Relationship Income ($M)_curr'] - seg_merge['Total Relationship Income ($M)_prev']
-    seg_merge['YoY_%'] = seg_merge['YoY_change'] / seg_merge['Total Relationship Income ($M)_prev'] * 100
-    top_seg = seg_merge.sort_values('YoY_change', ascending=False).iloc[0]
+    # --- 1️⃣ Managed TRI Commentary ---
+    tri_curr = df_curr['Total Relationship Income ($M)'].sum()
+    tri_prev = df_prev['Total Relationship Income ($M)'].sum()
+    yoy_change = tri_curr - tri_prev
+    yoy_pct = (yoy_change / tri_prev * 100) if tri_prev != 0 else np.nan
 
-    # Top 2 Business Lines contributing to top segment
-    prod_curr = current_df[current_df['CIB SME Segment'] == top_seg['CIB SME Segment']]
-    prod_prev = prev_df[prev_df['CIB SME Segment'] == top_seg['CIB SME Segment']]
-    prod_curr_sum = prod_curr.groupby('Business Line')['Total Relationship Income ($M)'].sum().reset_index()
-    prod_prev_sum = prod_prev.groupby('Business Line')['Total Relationship Income ($M)'].sum().reset_index()
-    prod_merge = pd.merge(prod_curr_sum, prod_prev_sum, on='Business Line', suffixes=('_curr', '_prev'))
-    prod_merge['YoY_change'] = prod_merge['Total Relationship Income ($M)_curr'] - prod_merge['Total Relationship Income ($M)_prev']
-    top_products = ', '.join(prod_merge.sort_values('YoY_change', ascending=False).head(2)['Business Line'].tolist())
+    # --- 2️⃣ Segment Commentary ---
+    seg_curr = df_curr.groupby('CIB SME Segment')['Total Relationship Income ($M)'].sum().reset_index()
+    seg_prev = df_prev.groupby('CIB SME Segment')['Total Relationship Income ($M)'].sum().reset_index()
+    seg = pd.merge(seg_curr, seg_prev, on='CIB SME Segment', suffixes=('_curr', '_prev'), how='outer').fillna(0)
+    seg['YoY_Change'] = seg['Total Relationship Income ($M)_curr'] - seg['Total Relationship Income ($M)_prev']
+    seg['YoY%'] = seg.apply(lambda x: (x['YoY_Change']/x['Total Relationship Income ($M)_prev']*100)
+                            if x['Total Relationship Income ($M)_prev'] != 0 else np.nan, axis=1)
+    top_seg = seg.sort_values('YoY_Change', ascending=False).iloc[0]
 
-    # -----------------------------------
-    # 3️⃣ Regional Commentary
-    # -----------------------------------
-    reg_curr = current_df.groupby('Managed region')['Total Relationship Income ($M)'].sum().reset_index()
-    reg_prev = prev_df.groupby('Managed region')['Total Relationship Income ($M)'].sum().reset_index()
-    reg_merge = pd.merge(reg_curr, reg_prev, on='Managed region', suffixes=('_curr', '_prev'))
-    reg_merge['YoY_change'] = reg_merge['Total Relationship Income ($M)_curr'] - reg_merge['Total Relationship Income ($M)_prev']
-    reg_merge['YoY_%'] = reg_merge['YoY_change'] / reg_merge['Total Relationship Income ($M)_prev'] * 100
-    reg_merge = reg_merge.sort_values('YoY_change', ascending=False).reset_index(drop=True)
-    top_regions = reg_merge.head(5)
+    # Get top 2 Business Lines contributing to top segment
+    seg_curr_top = df_curr[df_curr['CIB SME Segment'] == top_seg['CIB SME Segment']]
+    bl = seg_curr_top.groupby('Business Line')['Total Relationship Income ($M)'].sum().nlargest(2).index.tolist()
 
-    def get_top_countries(region_name):
-        reg_countries_curr = current_df[current_df['Managed region'] == region_name].groupby('Managed Country')['Total Relationship Income ($M)'].sum().reset_index()
-        reg_countries_prev = prev_df[prev_df['Managed region'] == region_name].groupby('Managed Country')['Total Relationship Income ($M)'].sum().reset_index()
-        merge = pd.merge(reg_countries_curr, reg_countries_prev, on='Managed Country', suffixes=('_curr', '_prev'))
-        merge['YoY_change'] = merge['Total Relationship Income ($M)_curr'] - merge['Total Relationship Income ($M)_prev']
-        merge = merge.sort_values('YoY_change', ascending=False).head(2)
-        return ', '.join(merge['Managed Country'].tolist())
+    # --- 3️⃣ Region Commentary ---
+    reg_curr = df_curr.groupby('Managed Region')['Total Relationship Income ($M)'].sum().reset_index()
+    reg_prev = df_prev.groupby('Managed Region')['Total Relationship Income ($M)'].sum().reset_index()
+    reg = pd.merge(reg_curr, reg_prev, on='Managed Region', suffixes=('_curr', '_prev'), how='outer').fillna(0)
+    reg['YoY_Change'] = reg['Total Relationship Income ($M)_curr'] - reg['Total Relationship Income ($M)_prev']
+    reg['YoY%'] = reg.apply(lambda x: (x['YoY_Change']/x['Total Relationship Income ($M)_prev']*100)
+                           if x['Total Relationship Income ($M)_prev'] != 0 else np.nan, axis=1)
+    reg = reg.sort_values('YoY%', ascending=False).reset_index(drop=True)
 
-    top1, top2 = top_regions.iloc[0], top_regions.iloc[1]
-    others = top_regions.iloc[2:5]
-    top1_countries = get_top_countries(top1['Managed region'])
-    top2_countries = get_top_countries(top2['Managed region'])
+    # Get Top 5 Regions
+    top_regions = reg.head(5)
 
-    # -----------------------------------
-    # 4️⃣ Word Commentary Output
-    # -----------------------------------
+    # For each region, get top 2 countries
+    region_country_data = []
+    for region in top_regions['Managed Region']:
+        df_region_curr = df_curr[df_curr['Managed Region'] == region]
+        df_region_prev = df_prev[df_prev['Managed Region'] == region]
+        country_curr = df_region_curr.groupby('Managed Country')['Total Relationship Income ($M)'].sum().reset_index()
+        country_prev = df_region_prev.groupby('Managed Country')['Total Relationship Income ($M)'].sum().reset_index()
+        country = pd.merge(country_curr, country_prev, on='Managed Country', suffixes=('_curr', '_prev'), how='outer').fillna(0)
+        country['YoY_Change'] = country['Total Relationship Income ($M)_curr'] - country['Total Relationship Income ($M)_prev']
+        country = country.sort_values('YoY_Change', ascending=False).head(2)
+        top_countries = ', '.join(country['Managed Country'])
+        region_country_data.append((region, top_countries))
+
+    # -------------------------
+    # Generate commentary text
+    # -------------------------
+    para1 = f"Managed TRI of ${tri_curr:.2f}M in {month_name} {current_year}, a change of ${yoy_change:.2f}M ({yoy_pct:.1f}%) from last year."
+    para2 = (f"Segments – Growth observed across client segments, primarily in {top_seg['CIB SME Segment']} "
+             f"(${top_seg['YoY_Change']:.2f}M, {top_seg['YoY%']:.1f}%) driven by {bl[0]} and {bl[1]} business lines.")
+    
+    # Regions Commentary (sorted by YoY%)
+    region_parts = []
+    for i, (region, countries) in enumerate(region_country_data):
+        row = top_regions.iloc[i]
+        if i == 0:
+            region_parts.append(f"Strong Growth in {region} (${row['YoY_Change']:.2f}M, {row['YoY%']:.1f}%) ({countries})")
+        elif i == 1:
+            region_parts.append(f"and {region} (${row['YoY_Change']:.2f}M, {row['YoY%']:.1f}%) ({countries})")
+        else:
+            region_parts.append(f"accompanied by steady growth in {region} (${row['YoY_Change']:.2f}M, {row['YoY%']:.1f}%)")
+    para3 = "Regions – " + ", ".join(region_parts) + "."
+
+    # -------------------------
+    # Write to Word File
+    # -------------------------
     doc = Document()
-    doc.add_heading(f"TRI Commentary - {current_month_name} {current_year}", level=1)
+    doc.add_heading(f"TRI Commentary - {month_name} {current_year}", level=1)
+    doc.add_paragraph(para1)
+    doc.add_paragraph(para2)
+    doc.add_paragraph(para3)
+    doc.save("TRI_Commentary.docx")
 
-    doc.add_paragraph(
-        f"1. Managed TRI of ${total_current:.2f}M in {current_month_name} {current_year}, "
-        f"representing a YoY change of ${yoy_change:.2f}M ({yoy_percent:.2f}%) from last year."
-    )
-
-    doc.add_paragraph(
-        f"2. Segments - Growth observed across all client segments, primarily in {top_seg['CIB SME Segment']} "
-        f"(YoY change ${top_seg['YoY_change']:.2f}M, {top_seg['YoY_%']:.2f}%), driven by {top_products}."
-    )
-
-    reg_text = (
-        f"3. Regions - Strong growth in {top1['Managed region']} "
-        f"(YoY change ${top1['YoY_change']:.2f}M, {top1['YoY_%']:.2f}%) led by {top1_countries}, "
-        f"and {top2['Managed region']} (YoY change ${top2['YoY_change']:.2f}M, {top2['YoY_%']:.2f}%) led by {top2_countries}, "
-        f"accompanied by steady growth in "
-    )
-    steady_parts = [
-        f"{r['Managed region']} (YoY change ${r['YoY_change']:.2f}M, {r['YoY_%']:.2f}%)"
-        for _, r in others.iterrows()
-    ]
-    reg_text += ', '.join(steady_parts) + '.'
-    doc.add_paragraph(reg_text)
-
-    output_path = "tri_commentary.docx"
-    doc.save(output_path)
-    print(f"✅ Commentary file generated successfully: {output_path}")
+    print("✅ TRI Commentary Word file generated successfully: TRI_Commentary.docx")
 
 # --------------------------
-# Example Usage
+# Example usage
 # --------------------------
-# df = pd.read_excel("your_data.xlsx")
+# df = pd.read_excel("your_data.xlsx")  # Replace with your actual data
 # generate_tri_commentary(df)
