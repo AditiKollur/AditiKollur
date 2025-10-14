@@ -74,6 +74,37 @@ def generate_tri_commentary(df):
         top_countries = ', '.join(country['Managed Country'])
         region_country_data.append((region, top_countries))
 
+    # --- 4️⃣ Product Commentary ---
+    bl_curr = df_curr.groupby('Business Line')['Total Relationship Income ($M)'].sum().reset_index()
+    bl_prev = df_prev.groupby('Business Line')['Total Relationship Income ($M)'].sum().reset_index()
+    bl_data = pd.merge(bl_curr, bl_prev, on='Business Line', suffixes=('_curr', '_prev'), how='outer').fillna(0)
+    bl_data['YoY_Change'] = bl_data['Total Relationship Income ($M)_curr'] - bl_data['Total Relationship Income ($M)_prev']
+    bl_data['YoY%'] = bl_data.apply(
+        lambda x: (x['YoY_Change'] / x['Total Relationship Income ($M)_prev'] * 100)
+        if x['Total Relationship Income ($M)_prev'] != 0 else np.nan, axis=1
+    )
+    bl_data = bl_data.sort_values('YoY_Change', ascending=False).reset_index(drop=True)
+
+    # Top 2 and Bottom 1 Business Lines
+    top1 = bl_data.iloc[0]
+    top2 = bl_data.iloc[1] if len(bl_data) > 1 else None
+    bottom = bl_data.iloc[-1]
+
+    # Get top 2 products for each of these Business Lines
+    def get_top_products(df_curr, df_prev, bl_name):
+        df_bl_curr = df_curr[df_curr['Business Line'] == bl_name]
+        df_bl_prev = df_prev[df_prev['Business Line'] == bl_name]
+        prod_curr = df_bl_curr.groupby('Product')['Total Relationship Income ($M)'].sum().reset_index()
+        prod_prev = df_bl_prev.groupby('Product')['Total Relationship Income ($M)'].sum().reset_index()
+        prod = pd.merge(prod_curr, prod_prev, on='Product', suffixes=('_curr', '_prev'), how='outer').fillna(0)
+        prod['YoY_Change'] = prod['Total Relationship Income ($M)_curr'] - prod['Total Relationship Income ($M)_prev']
+        prod = prod.sort_values('YoY_Change', ascending=False).head(2)
+        return ', '.join(prod['Product'].tolist())
+
+    top1_prods = get_top_products(df_curr, df_prev, top1['Business Line'])
+    top2_prods = get_top_products(df_curr, df_prev, top2['Business Line']) if top2 is not None else ''
+    bottom_prods = get_top_products(df_curr, df_prev, bottom['Business Line'])
+
     # -------------------------
     # Generate commentary text (rounded to 0 decimals)
     # -------------------------
@@ -88,7 +119,6 @@ def generate_tri_commentary(df):
         f"{bl[0]} and {bl[1]} business lines."
     )
 
-    # Regions Commentary (sorted by YoY%)
     region_parts = []
     for i, (region, countries) in enumerate(region_country_data):
         row = top_regions.iloc[i]
@@ -100,6 +130,13 @@ def generate_tri_commentary(df):
             region_parts.append(f"accompanied by steady growth in {region} (${row['YoY_Change']:.0f}M, {row['YoY%']:.0f}%)")
     para3 = "Regions – " + ", ".join(region_parts) + "."
 
+    para4 = (
+        f"Products – Strong {top1['Business Line']} (${top1['YoY_Change']:.0f}M, {top1['YoY%']:.0f}%) driven by "
+        f"{top1_prods}. {top2['Business Line']} (${top2['YoY_Change']:.0f}M, {top2['YoY%']:.0f}%) driven by "
+        f"{top2_prods}. Conversely, {bottom['Business Line']} was down "
+        f"${abs(bottom['YoY_Change']):.0f}M ({abs(bottom['YoY%']):.0f}%) from external factors."
+    )
+
     # -------------------------
     # Write to Word File
     # -------------------------
@@ -108,6 +145,7 @@ def generate_tri_commentary(df):
     doc.add_paragraph(para1)
     doc.add_paragraph(para2)
     doc.add_paragraph(para3)
+    doc.add_paragraph(para4)
     doc.save("TRI_Commentary.docx")
 
     print("✅ TRI Commentary Word file generated successfully: TRI_Commentary.docx")
@@ -117,6 +155,4 @@ def generate_tri_commentary(df):
 # --------------------------
 # df = pd.read_excel("your_data.xlsx")  # Load your actual data
 # generate_tri_commentary(df)
-
-
 ```
