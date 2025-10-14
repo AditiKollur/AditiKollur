@@ -78,3 +78,45 @@ def generate_tri_commentary(df):
     # Generate commentary text (rounded to 0 decimals)
     # -------------------------
     para1 = (
+        f"Managed TRI of ${tri_curr:.0f}M in {month_name} {current_year}, "
+        f"a change of ${yoy_change:.0f}M ({yoy_pct:.0f}%) from last year."
+    )
+
+    para2 = (
+        f"Segments – Growth observed across client segments, primarily in {top_seg['CIB SME Segment']} "
+        f"(${top_seg['YoY_Change']:.0f}M, {top_seg['YoY%']:.0f}%) driven by "
+        f"{bl[0]} and {bl[1]} business lines."
+    )
+
+    # Regions Commentary (sorted by YoY%)
+    region_parts = []
+    for i, (region, countries) in enumerate(region_country_data):
+        row = top_regions.iloc[i]
+        if i == 0:
+            region_parts.append(f"Strong Growth in {region} (${row['YoY_Change']:.0f}M, {row['YoY%']:.0f}%) ({countries})")
+        elif i == 1:
+            region_parts.append(f"and {region} (${row['YoY_Change']:.0f}M, {row['YoY%']:.0f}%) ({countries})")
+        else:
+            region_parts.append(f"accompanied by steady growth in {region} (${row['YoY_Change']:.0f}M, {row['YoY%']:.0f}%)")
+    para3 = "Regions – " + ", ".join(region_parts) + "."
+
+    # -------------------------
+    # Write to Word File
+    # -------------------------
+    doc = Document()
+    doc.add_heading(f"TRI Commentary - {month_name} {current_year}", level=1)
+    doc.add_paragraph(para1)
+    doc.add_paragraph(para2)
+    doc.add_paragraph(para3)
+    doc.save("TRI_Commentary.docx")
+
+    print("✅ TRI Commentary Word file generated successfully: TRI_Commentary.docx")
+
+# --------------------------
+# Example usage
+# --------------------------
+# df = pd.read_excel("your_data.xlsx")  # Load your actual data
+# generate_tri_commentary(df)
+
+
+```
