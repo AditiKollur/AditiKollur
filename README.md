@@ -5,7 +5,6 @@ from tkcalendar import DateEntry
 import pandas as pd
 
 def browse_file(entry_widget):
-    """Open file dialog for Excel files and update the entry"""
     file_path = filedialog.askopenfilename(
         title="Select Excel File",
         filetypes=[("Excel Files", "*.xlsx *.xls")]
@@ -15,7 +14,6 @@ def browse_file(entry_widget):
         entry_widget.insert(0, file_path)
 
 def submit_action():
-    """Validate and load both Excel files, show selected date"""
     file1 = file1_entry.get()
     file2 = file2_entry.get()
     selected_date = date_entry.get_date()
@@ -34,6 +32,7 @@ def submit_action():
             f"File 1: {len(df1)} rows\n"
             f"File 2: {len(df2)} rows"
         )
+        root.destroy()  # Close the UI after success
     except Exception as e:
         messagebox.showerror("Error", f"Failed to read Excel files:\n\n{e}")
 
@@ -43,24 +42,24 @@ root.title("Excel File and Date Selector")
 root.geometry("500x280")
 root.resizable(False, False)
 
-# --- File 1 Selection ---
+# File 1
 tk.Label(root, text="Select First Excel File:").grid(row=0, column=0, padx=10, pady=20, sticky="w")
 file1_entry = tk.Entry(root, width=45)
 file1_entry.grid(row=0, column=1, padx=5)
 tk.Button(root, text="Browse", command=lambda: browse_file(file1_entry)).grid(row=0, column=2, padx=5)
 
-# --- File 2 Selection ---
+# File 2
 tk.Label(root, text="Select Second Excel File:").grid(row=1, column=0, padx=10, pady=20, sticky="w")
 file2_entry = tk.Entry(root, width=45)
 file2_entry.grid(row=1, column=1, padx=5)
 tk.Button(root, text="Browse", command=lambda: browse_file(file2_entry)).grid(row=1, column=2, padx=5)
 
-# --- Date Picker ---
+# Date picker
 tk.Label(root, text="Select Date:").grid(row=2, column=0, padx=10, pady=20, sticky="w")
 date_entry = DateEntry(root, width=18, background='darkblue', foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
 date_entry.grid(row=2, column=1, padx=5, sticky="w")
 
-# --- Submit Button ---
+# Submit button
 tk.Button(root, text="Load Files", width=20, bg="#4CAF50", fg="white", command=submit_action).grid(row=3, column=1, pady=30)
 
 root.mainloop()
