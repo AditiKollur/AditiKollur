@@ -13,6 +13,11 @@ def generate_tri_commentary_yoy(df):
     df["Year"] = df["Date"].dt.year
     df["Month"] = df["Date"].dt.month
 
+    # --- Combine UK RFB + NRFB + Europe into single 'Europe' region ---
+    df["Managed region"] = df["Managed region"].replace(
+        {"United Kingdom - RFB": "Europe", "United Kingdom - NRFB": "Europe"}
+    )
+
     # --- Detect current and previous year/month ---
     latest_date = df["Date"].max()
     current_month = latest_date.month
@@ -61,7 +66,7 @@ def generate_tri_commentary_yoy(df):
     # --- Top 2 Business Lines ---
     top_bl = bl_df.sort_values("YoY_Change", ascending=False).head(2).reset_index()
 
-    # --- Region-level analysis ---
+    # --- Region-level analysis (after merging Europe+UKs) ---
     region_current = current_data.groupby("Managed region", dropna=False)["Total Relationship Income ($M)"].sum()
     region_prev = prev_year_data.groupby("Managed region", dropna=False)["Total Relationship Income ($M)"].sum()
 
@@ -90,40 +95,46 @@ def generate_tri_commentary_yoy(df):
         sub = region_country_df[region_country_df["Managed region"] == region_name]
         return sub.sort_values("YoY_Change", ascending=False).head(2)[["Managed Country", "YoY_Change", "YoY%"]]
 
+    # --- Round numbers to 0 decimals everywhere ---
+    round_cols = ["Current", "Prev_Year", "YoY_Change", "YoY%"]
+    for df_ in [seg_df, bl_df, region_df, region_country_df]:
+        df_[round_cols] = df_[round_cols].round(0)
+
     # --- Build commentary text ---
     doc = Document()
     month_name = datetime(1900, current_month, 1).strftime("%B")
 
     para1 = (
-        f"Managed TRI of ${current_tri:.2f}M in {month_name} {current_year}, "
-        f"YoY change of ${yoy_change_num:+.2f}M ({yoy_change_pct:+.1f}%) from {month_name} {prev_year}."
+        f"Managed TRI of ${current_tri:.0f}M in {month_name} {current_year}, "
+        f"YoY change of ${yoy_change_num:+.0f}M ({yoy_change_pct:+.0f}%) from {month_name} {prev_year}."
     )
 
     para2 = (
         f"Segments – Growth/Fall across all client segments. "
         f"Top-performing CIB SME segment: '{top_segment}' with YoY change of "
-        f"${top_segment_yoy_num:+.2f}M ({top_segment_yoy_pct:+.1f}%). "
+        f"${top_segment_yoy_num:+.0f}M ({top_segment_yoy_pct:+.0f}%). "
         f"Top contributing Business Lines: "
-        f"{top_bl.loc[0, 'Business Line']} (${top_bl.loc[0, 'Current']:.2f}M, "
-        f"YoY change ${top_bl.loc[0, 'YoY_Change']:+.2f}M, {top_bl.loc[0, 'YoY%']:+.1f}%), "
-        f"and {top_bl.loc[1, 'Business Line']} (${top_bl.loc[1, 'Current']:.2f}M, "
-        f"YoY change ${top_bl.loc[1, 'YoY_Change']:+.2f}M, {top_bl.loc[1, 'YoY%']:+.1f}%)."
+        f"{top_bl.loc[0, 'Business Line']} (${top_bl.loc[0, 'Current']:.0f}M, "
+        f"YoY change ${top_bl.loc[0, 'YoY_Change']:+.0f}M, {top_bl.loc[0, 'YoY%']:+.0f}%), "
+        f"and {top_bl.loc[1, 'Business Line']} (${top_bl.loc[1, 'Current']:.0f}M, "
+        f"YoY change ${top_bl.loc[1, 'YoY_Change']:+.0f}M, {top_bl.loc[1, 'YoY%']:+.0f}%)."
     )
 
     # --- Third commentary (Region growth summary) ---
-    top1, top2, top3, top4, top5 = top5_regions["Managed region"].tolist()
+    top_regions = top5_regions["Managed region"].tolist()
+    top1, top2, top3, top4, top5 = top_regions[:5]
     c1 = top_countries(top1)
     c2 = top_countries(top2)
 
     para3 = (
-        f"Regions – Strong growth in {top1} (${top5_regions.loc[0, 'YoY_Change']:+.2f}M, "
-        f"{top5_regions.loc[0, 'YoY%']:+.1f}%) led by {c1.iloc[0, 0]} and {c1.iloc[1, 0]}, "
-        f"followed by {top2} (${top5_regions.loc[1, 'YoY_Change']:+.2f}M, "
-        f"{top5_regions.loc[1, 'YoY%']:+.1f}%) driven by {c2.iloc[0, 0]} and {c2.iloc[1, 0]}. "
-        f"Accompanied by steady growth in {top3} (${top5_regions.loc[2, 'YoY_Change']:+.2f}M, "
-        f"{top5_regions.loc[2, 'YoY%']:+.1f}%), {top4} (${top5_regions.loc[3, 'YoY_Change']:+.2f}M, "
-        f"{top5_regions.loc[3, 'YoY%']:+.1f}%), and {top5} (${top5_regions.loc[4, 'YoY_Change']:+.2f}M, "
-        f"{top5_regions.loc[4, 'YoY%']:+.1f}%)."
+        f"Regions – Strong growth in {top1} (${top5_regions.loc[0, 'YoY_Change']:+.0f}M, "
+        f"{top5_regions.loc[0, 'YoY%']:+.0f}%) led by {c1.iloc[0, 0]} and {c1.iloc[1, 0]}, "
+        f"followed by {top2} (${top5_regions.loc[1, 'YoY_Change']:+.0f}M, "
+        f"{top5_regions.loc[1, 'YoY%']:+.0f}%) driven by {c2.iloc[0, 0]} and {c2.iloc[1, 0]}. "
+        f"Accompanied by steady growth in {top3} (${top5_regions.loc[2, 'YoY_Change']:+.0f}M, "
+        f"{top5_regions.loc[2, 'YoY%']:+.0f}%), {top4} (${top5_regions.loc[3, 'YoY_Change']:+.0f}M, "
+        f"{top5_regions.loc[3, 'YoY%']:+.0f}%), and {top5} (${top5_regions.loc[4, 'YoY_Change']:+.0f}M, "
+        f"{top5_regions.loc[4, 'YoY%']:+.0f}%)."
     )
 
     # --- Add paragraphs ---
