@@ -4,6 +4,11 @@ from tkinter import filedialog, messagebox
 from tkcalendar import DateEntry
 import pandas as pd
 
+# Variables to store the selected files and date
+selected_file1 = None
+selected_file2 = None
+selected_date = None
+
 def browse_file(entry_widget):
     file_path = filedialog.askopenfilename(
         title="Select Excel File",
@@ -14,23 +19,27 @@ def browse_file(entry_widget):
         entry_widget.insert(0, file_path)
 
 def submit_action():
-    file1 = file1_entry.get()
-    file2 = file2_entry.get()
+    global selected_file1, selected_file2, selected_date
+
+    selected_file1 = file1_entry.get()
+    selected_file2 = file2_entry.get()
     selected_date = date_entry.get_date()
 
-    if not file1 or not file2:
+    if not selected_file1 or not selected_file2:
         messagebox.showerror("Error", "Please select both Excel files.")
         return
 
     try:
-        df1 = pd.read_excel(file1)
-        df2 = pd.read_excel(file2)
+        # Test reading the Excel files
+        df1 = pd.read_excel(selected_file1)
+        df2 = pd.read_excel(selected_file2)
+
         messagebox.showinfo(
             "Files Loaded",
             f"✅ Both Excel files loaded successfully!\n\n"
             f"📅 Selected Date: {selected_date}\n\n"
-            f"File 1: {len(df1)} rows\n"
-            f"File 2: {len(df2)} rows"
+            f"File 1: {selected_file1}\n"
+            f"File 2: {selected_file2}"
         )
         root.destroy()  # Close the UI after success
     except Exception as e:
@@ -63,3 +72,8 @@ date_entry.grid(row=2, column=1, padx=5, sticky="w")
 tk.Button(root, text="Load Files", width=20, bg="#4CAF50", fg="white", command=submit_action).grid(row=3, column=1, pady=30)
 
 root.mainloop()
+
+# After window closes, you can use the variables:
+print("File 1:", selected_file1)
+print("File 2:", selected_file2)
+print("Selected Date:", selected_date)
