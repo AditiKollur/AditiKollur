@@ -1,158 +1,222 @@
 ```
+import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from ttkbootstrap import Style
-from ttkbootstrap.widgets import Button, Label, Combobox, Frame
-import pandas as pd
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
 
 
-class DataSelectionApp:
+class DataMappingApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Data Selection Portal")
-        self.style = Style(theme="cosmo")
+        self.root.title("📊 Data Mapping Tool")
+        self.style = ttk.Style("flatly")
 
+        # Stored data
         self.data_file = None
         self.req_file = None
-        self.df = None
+        self.df_data = None
+        self.df_req = None
+        self.new_column_details = {}
+        self.selections = {}
 
-        self.frame_main = Frame(root, padding=30)
-        self.frame_main.pack(fill="both", expand=True)
+        self.build_ui()
 
-        self.build_file_upload_ui()
+    # ---------- MAIN UI ----------
+    def build_ui(self):
+        ttk.Label(self.root, text="📁 Step 1: Upload Files", font=("Segoe UI", 14, "bold")).pack(pady=10)
 
-    def clear_frame(self):
-        for widget in self.frame_main.winfo_children():
-            widget.destroy()
+        frame_upload = ttk.Frame(self.root)
+        frame_upload.pack(pady=5)
 
-    def build_file_upload_ui(self):
-        """UI for selecting Data and Req files"""
-        self.clear_frame()
+        ttk.Button(frame_upload, text="Select Data File", bootstyle=PRIMARY, command=self.load_data_file).grid(row=0, column=0, padx=5)
+        ttk.Button(frame_upload, text="Select Requirement File", bootstyle=PRIMARY, command=self.load_req_file).grid(row=0, column=1, padx=5)
 
-        Label(self.frame_main, text="📂 Upload Required Files", font=("Segoe UI", 16, "bold")).pack(pady=10)
+        self.label_files = ttk.Label(self.root, text="No files selected", font=("Segoe UI", 10))
+        self.label_files.pack(pady=5)
 
-        Button(self.frame_main, text="Select Data File", bootstyle="info", command=self.load_data_file, width=25).pack(pady=10)
-        Button(self.frame_main, text="Select Req File", bootstyle="info", command=self.load_req_file, width=25).pack(pady=10)
+        ttk.Separator(self.root, bootstyle="info").pack(fill="x", pady=10)
 
-        self.lbl_status = Label(self.frame_main, text="", font=("Segoe UI", 10))
-        self.lbl_status.pack(pady=10)
+        # Step 2 - Optional Column Builder
+        ttk.Label(self.root, text="🧩 Step 2: Optional - Build Custom Column", font=("Segoe UI", 14, "bold")).pack(pady=10)
 
-        Button(self.frame_main, text="Submit Files", bootstyle="success", command=self.submit_files, width=20).pack(pady=20)
+        self.frame_build = ttk.Labelframe(self.root, text="Build Column from Existing", bootstyle="info")
+        self.frame_build.pack(fill="x", padx=10, pady=5)
+        self.build_column_ui()
 
+        ttk.Separator(self.root, bootstyle="info").pack(fill="x", pady=10)
+
+        # Step 3 - Column Mapping
+        ttk.Label(self.root, text="🗂️ Step 3: Column Mappings", font=("Segoe UI", 14, "bold")).pack(pady=10)
+        self.frame_mapping = ttk.Frame(self.root)
+        self.frame_mapping.pack(fill="x", padx=10, pady=5)
+
+        self.build_mapping_ui()
+
+        ttk.Button(self.root, text="Submit All", bootstyle=SUCCESS, command=self.submit_all).pack(pady=15)
+
+    # ---------- LOAD FILES ----------
     def load_data_file(self):
-        file_path = filedialog.askopenfilename(title="Select Data File", filetypes=[("Excel files", "*.xlsx *.xls")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV or Excel files", "*.csv *.xlsx")])
         if file_path:
             self.data_file = file_path
-            self.lbl_status.config(text="Data File Loaded ✅")
-            try:
-                self.df = pd.read_excel(file_path)
-            except Exception as e:
-                messagebox.showerror("Error", f"Error loading Excel file: {e}")
+            if file_path.endswith(".csv"):
+                self.df_data = pd.read_csv(file_path)
+            else:
+                self.df_data = pd.read_excel(file_path)
+            self.update_file_label()
 
     def load_req_file(self):
-        file_path = filedialog.askopenfilename(title="Select Req File", filetypes=[("Excel files", "*.xlsx *.xls")])
+        file_path = filedialog.askopenfilename(filetypes=[("CSV or Excel files", "*.csv *.xlsx")])
         if file_path:
             self.req_file = file_path
-            self.lbl_status.config(text="Req File Loaded ✅")
-
-    def submit_files(self):
-        if not self.data_file or not self.req_file:
-            messagebox.showwarning("Missing Files", "Please upload both Data and Req files before proceeding.")
-            return
-        if self.df is None:
-            messagebox.showerror("Error", "Data file not loaded properly.")
-            return
-        self.build_column_selection_ui()
-
-    def build_column_selection_ui(self):
-        """UI for selecting multiple pairs (and one triple) of columns"""
-        self.clear_frame()
-
-        Label(self.frame_main, text="📊 Column Mapping", font=("Segoe UI", 16, "bold")).grid(row=0, column=0, columnspan=5, pady=20)
-
-        rows = [
-            ("Segment Performance", "segment", 2),
-            ("Product Performance", "product", 2),
-            ("Region Performance", "region", 3),
-        ]
-
-        self.vars = {}
-        columns = list(self.df.columns)
-
-        for i, (label_text, key, num_combos) in enumerate(rows, start=1):
-            Label(self.frame_main, text=label_text, font=("Segoe UI", 12)).grid(row=i, column=0, padx=10, pady=10, sticky="w")
-
-            combo_vars = []
-            combo_boxes = []
-
-            for j in range(num_combos):
-                var = tk.StringVar()
-                combo = Combobox(self.frame_main, textvariable=var, values=columns, bootstyle="info", width=20)
-
-                # Disable all except the first
-                if j > 0:
-                    combo.config(state="disabled")
-
-                combo.grid(row=i, column=j + 1, padx=10, pady=5)
-                combo_vars.append(var)
-                combo_boxes.append(combo)
-
-            # Bind logic for progressive enablement and intra-row exclusion
-            for idx, combo in enumerate(combo_boxes):
-                combo.bind(
-                    "<<ComboboxSelected>>",
-                    lambda e, i=idx, cboxes=combo_boxes: self.handle_selection_in_row(i, cboxes),
-                )
-
-            self.vars[key] = combo_vars
-
-        Button(self.frame_main, text="Submit Selection", bootstyle="success", command=self.submit_selection, width=20).grid(
-            row=len(rows) + 1, column=0, columnspan=5, pady=30
-        )
-
-    def handle_selection_in_row(self, index, combo_boxes):
-        """Mutual exclusion + progressive unlock"""
-        all_columns = list(self.df.columns)
-        selected = [cb.get() for cb in combo_boxes if cb.get()]
-
-        # Update mutual exclusion
-        for cb in combo_boxes:
-            current_val = cb.get()
-            new_values = [c for c in all_columns if c not in selected or c == current_val]
-            cb.config(values=new_values)
-
-        # Unlock the next dropdown only if current is selected
-        if index + 1 < len(combo_boxes):
-            next_cb = combo_boxes[index + 1]
-            if combo_boxes[index].get():
-                next_cb.config(state="normal")
+            if file_path.endswith(".csv"):
+                self.df_req = pd.read_csv(file_path)
             else:
-                # If user clears previous dropdown, lock again
-                next_cb.config(state="disabled")
-                next_cb.set("")  # reset value
+                self.df_req = pd.read_excel(file_path)
+            self.update_file_label()
 
-    def submit_selection(self):
-        """Collect all selections and validate"""
-        selected_data = {}
+    def update_file_label(self):
+        if self.data_file and self.req_file:
+            self.label_files.config(text=f"✅ Data: {self.data_file.split('/')[-1]} | Req: {self.req_file.split('/')[-1]}")
+        elif self.data_file:
+            self.label_files.config(text=f"Data File Loaded: {self.data_file.split('/')[-1]}")
+        elif self.req_file:
+            self.label_files.config(text=f"Requirement File Loaded: {self.req_file.split('/')[-1]}")
 
-        for key, var_list in self.vars.items():
-            selected_values = [v.get() for v in var_list]
-            if any(not v for v in selected_values):
-                messagebox.showwarning("Incomplete Selection", f"Please complete selection for {key.capitalize()} Performance.")
-                return
-            selected_data[key] = selected_values
+    # ---------- COLUMN BUILDER ----------
+    def build_column_ui(self):
+        ttk.Label(self.frame_build, text="Base Column:").grid(row=0, column=0, padx=5, pady=5)
+        self.cmb_base_col = ttk.Combobox(self.frame_build, state="readonly")
+        self.cmb_base_col.grid(row=0, column=1, padx=5, pady=5)
 
-        # Summary message
-        summary_lines = []
-        for k, vals in selected_data.items():
-            summary_lines.append(f"{k.capitalize()}: " + " | ".join(vals))
+        ttk.Button(self.frame_build, text="Load Columns", bootstyle=INFO, command=self.load_columns_for_builder).grid(row=0, column=2, padx=5)
 
-        messagebox.showinfo("Selection Saved ✅", "\n".join(summary_lines))
-        self.root.destroy()
+        ttk.Label(self.frame_build, text="New Column Name:").grid(row=1, column=0, padx=5, pady=5)
+        self.entry_new_col = ttk.Entry(self.frame_build)
+        self.entry_new_col.grid(row=1, column=1, padx=5, pady=5)
+
+        self.frame_groups = ttk.Frame(self.frame_build)
+        self.frame_groups.grid(row=2, column=0, columnspan=3, pady=5)
+        self.group_entries = []
+        self.add_group_row()
+
+        ttk.Button(self.frame_build, text="Add Group", bootstyle=SECONDARY, command=self.add_group_row).grid(row=3, column=0, pady=5)
+        ttk.Button(self.frame_build, text="Create Column", bootstyle=SUCCESS, command=self.create_new_column).grid(row=3, column=1, pady=5)
+
+    def load_columns_for_builder(self):
+        if self.df_data is not None:
+            self.cmb_base_col["values"] = list(self.df_data.columns)
+        else:
+            messagebox.showerror("Error", "Please load a data file first.")
+
+    def add_group_row(self):
+        row = len(self.group_entries)
+        frame_row = ttk.Frame(self.frame_groups)
+        frame_row.pack(fill="x", pady=2)
+
+        lbl = ttk.Label(frame_row, text=f"Group {row+1}:")
+        lbl.pack(side="left", padx=5)
+
+        cmb = ttk.Combobox(frame_row, width=25)
+        cmb.pack(side="left", padx=5)
+        name = ttk.Entry(frame_row, width=20)
+        name.pack(side="left", padx=5)
+        self.group_entries.append((cmb, name))
+
+    def create_new_column(self):
+        if self.df_data is None:
+            messagebox.showerror("Error", "Please upload a data file first.")
+            return
+
+        base_col = self.cmb_base_col.get()
+        new_col = self.entry_new_col.get()
+        if not base_col or not new_col:
+            messagebox.showerror("Error", "Please specify both base and new column names.")
+            return
+
+        unique_vals = self.df_data[base_col].dropna().unique().tolist()
+        mapping = {}
+        for cmb, name in self.group_entries:
+            if cmb.get() and name.get():
+                mapping[name.get()] = [cmb.get()]
+
+        if not mapping:
+            messagebox.showerror("Error", "Please define at least one group.")
+            return
+
+        self.df_data[new_col] = self.df_data[base_col].apply(
+            lambda x: next((k for k, v in mapping.items() if x in v), x)
+        )
+        self.new_column_details = {"base_column": base_col, "new_column_name": new_col, "mapping": mapping}
+        messagebox.showinfo("Success", f"✅ New column '{new_col}' created successfully!")
+
+    # ---------- MAPPING SECTION ----------
+    def build_mapping_ui(self):
+        self.mapping_structure = {
+            "Segment": ["Col 2", "Col 3"],
+            "Product": ["Col 2", "Col 3"],
+            "Region": ["Col 2", "Col 3", "Col 4"],
+        }
+
+        self.mapping_dropdowns = {}
+
+        for idx, (level, cols) in enumerate(self.mapping_structure.items()):
+            ttk.Label(self.frame_mapping, text=f"{level} Performance:", font=("Segoe UI", 11, "bold")).grid(row=idx, column=0, sticky="w", pady=5)
+            row_widgets = []
+            used_vars = set()
+
+            for j, col_name in enumerate(cols, start=1):
+                var = tk.StringVar()
+                cmb = ttk.Combobox(self.frame_mapping, textvariable=var, state="readonly", width=18)
+                cmb.grid(row=idx, column=j, padx=5, pady=3)
+
+                def callback(event, this_var=var, row=row_widgets, used=used_vars):
+                    val = this_var.get()
+                    for c, _v in row:
+                        if c != this_var:
+                            c_values = [x for x in list(self.df_data.columns) if x != val]
+                            c["values"] = c_values
+
+                cmb.bind("<<ComboboxSelected>>", callback)
+                row_widgets.append((var, cmb))
+            self.mapping_dropdowns[level] = row_widgets
+
+        ttk.Button(self.frame_mapping, text="Load Columns", bootstyle=INFO, command=self.load_columns_for_mapping).grid(row=len(self.mapping_structure)+1, column=1, pady=5)
+
+    def load_columns_for_mapping(self):
+        if self.df_data is None:
+            messagebox.showerror("Error", "Please load a data file first.")
+            return
+        for level, widgets in self.mapping_dropdowns.items():
+            for var, cmb in widgets:
+                cmb["values"] = list(self.df_data.columns)
+
+    # ---------- SUBMIT ----------
+    def submit_all(self):
+        if not self.data_file or not self.req_file:
+            messagebox.showerror("Error", "Please upload both files first.")
+            return
+
+        self.selections = {}
+        for level, widgets in self.mapping_dropdowns.items():
+            self.selections[level] = [v.get() for v, _ in widgets if v.get()]
+
+        summary = f"""
+✅ Data File: {self.data_file}
+✅ Requirement File: {self.req_file}
+📄 New Column: {self.new_column_details.get('new_column_name', 'None')}
+🗂️ Selections: {self.selections}
+"""
+        messagebox.showinfo("Summary", summary)
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = DataSelectionApp(root)
-    root.geometry("850x500")
+    root = ttk.Window(themename="cosmo")
+    app = DataMappingApp(root)
     root.mainloop()
+
+app.data_file
+app.req_file
+app.new_column_details
+app.selections
