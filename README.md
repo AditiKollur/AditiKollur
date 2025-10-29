@@ -118,27 +118,41 @@ class DataMappingApp:
         ttk.Label(frame, text="Group Name:").grid(row=0, column=0, padx=5, pady=5)
         ttk.Entry(frame, textvariable=group_name).grid(row=0, column=1, padx=5, pady=5)
 
-        multi_var = tk.StringVar(value=[])
-        available = [v for v in self.remaining_values if v not in sum(self.groups.values(), [])]
-        multiselect = ttk.Combobox(frame, values=available)
-        multiselect.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
-        ttk.Button(frame, text="Add to Group", bootstyle="success",
-                   command=lambda: self.save_group(group_name, multiselect.get())).grid(row=2, column=0, columnspan=2, pady=5)
-        self.group_widgets.append((group_name, multiselect))
+        ttk.Label(frame, text="Select values (Ctrl+Click for multiple):").grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+        listbox = tk.Listbox(frame, selectmode="multiple", height=6, exportselection=False)
+        for v in [v for v in self.remaining_values if v not in sum(self.groups.values(), [])]:
+            listbox.insert(tk.END, v)
+        listbox.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
-    def save_group(self, name_var, value):
-        name = name_var.get()
-        if not name or not value:
+        ttk.Button(frame, text="Add to Group", bootstyle="success",
+                   command=lambda: self.save_group(group_name, listbox)).grid(row=3, column=0, columnspan=2, pady=5)
+        self.group_widgets.append((group_name, listbox))
+
+    def save_group(self, name_var, listbox):
+        name = name_var.get().strip()
+        selected_indices = listbox.curselection()
+        selected_values = [listbox.get(i) for i in selected_indices]
+
+        if not name or not selected_values:
             messagebox.showwarning("Error", "Please specify a group name and select at least one value.")
             return
 
         if name not in self.groups:
             self.groups[name] = []
-        if value in self.remaining_values:
-            self.groups[name].append(value)
-            self.remaining_values.remove(value)
+        self.groups[name].extend(selected_values)
 
-        messagebox.showinfo("Added", f"Added '{value}' to group '{name}'")
+        # Remove used values
+        for val in selected_values:
+            if val in self.remaining_values:
+                self.remaining_values.remove(val)
+
+        messagebox.showinfo("Added", f"Added {len(selected_values)} values to group '{name}'.")
+
+        # Refresh all remaining listboxes
+        for _, lb in self.group_widgets:
+            lb.delete(0, tk.END)
+            for v in [v for v in self.remaining_values if v not in sum(self.groups.values(), [])]:
+                lb.insert(tk.END, v)
 
     def replicate_groups(self):
         if not self.groups:
