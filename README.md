@@ -1,7 +1,8 @@
 ```
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from tkinter import StringVar, Listbox, END, MULTIPLE, filedialog
+from ttkbootstrap.dialogs import Messagebox
+from tkinter import filedialog, StringVar, Listbox, END, MULTIPLE
 import pandas as pd
 
 
@@ -9,30 +10,28 @@ class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("Custom Column Builder")
-        self.geometry("820x600")
+        self.geometry("800x580")
         self.resizable(False, False)
 
         # internal state
         self.data_file = None
         self.req_file = None
         self.df = None
-        self.req_df = None
         self.group_mapping = {}
 
         # notebook setup
         self.notebook = ttk.Notebook(self)
         self.page1 = ttk.Frame(self.notebook)
         self.page2 = ttk.Frame(self.notebook)
-
         self.notebook.add(self.page1, text="Step 1 – Select Files")
         self.notebook.add(self.page2, text="Step 2 – Create Custom Column")
         self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        # Disable 2nd tab initially
-        self.notebook.tab(1, state="disabled")
-
         self.build_page1()
         self.build_page2()
+
+        # Initially disable Page 2
+        self.notebook.tab(1, state="disabled")
 
     # ---------------- PAGE 1 -----------------
     def build_page1(self):
@@ -60,140 +59,104 @@ class App(ttk.Window):
 
     # ---------------- PAGE 2 -----------------
     def build_page2(self):
-        frame = ttk.Labelframe(self.page2, text="2️⃣ Create Custom Column", padding=20)
-        frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+        self.page2_frame = ttk.Labelframe(self.page2, text="2️⃣ Create Custom Column", padding=20)
+        self.page2_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
-        ttk.Label(frame, text="Select Column:").grid(row=0, column=0, sticky=W, pady=5)
         self.col_var = StringVar()
-        self.col_combo = ttk.Combobox(frame, textvariable=self.col_var, width=25, state="readonly")
-        self.col_combo.grid(row=0, column=1, padx=10)
+        self.group_name_var = StringVar()
 
-        ttk.Label(frame, text="New Name:").grid(row=0, column=2, sticky=W, padx=20)
-        self.new_name = ttk.Entry(frame, width=20)
-        self.new_name.grid(row=0, column=3)
+        ttk.Label(self.page2_frame, text="Select Column:").grid(row=0, column=0, sticky=W)
+        self.col_dropdown = ttk.Combobox(self.page2_frame, textvariable=self.col_var, state="readonly", width=30)
+        self.col_dropdown.grid(row=0, column=1, padx=10, pady=5)
 
-        ttk.Button(frame, text="Load Unique Values", bootstyle=INFO,
-                   command=self.load_unique_values).grid(row=1, column=0, columnspan=4, pady=10)
+        ttk.Label(self.page2_frame, text="Enter Group Name:").grid(row=1, column=0, sticky=W)
+        ttk.Entry(self.page2_frame, textvariable=self.group_name_var, width=30).grid(row=1, column=1, padx=10, pady=5)
 
-        self.listbox = Listbox(frame, height=10, width=40, selectmode=MULTIPLE)
-        self.listbox.grid(row=2, column=0, columnspan=2, rowspan=3, padx=10, pady=10)
+        self.value_listbox = Listbox(self.page2_frame, selectmode=MULTIPLE, width=40, height=10)
+        self.value_listbox.grid(row=2, column=0, columnspan=2, pady=10)
 
-        ttk.Label(frame, text="Group Name:").grid(row=2, column=2, sticky=W)
-        self.group_entry = ttk.Entry(frame, width=20)
-        self.group_entry.grid(row=2, column=3, pady=5)
+        ttk.Button(self.page2_frame, text="Load Values", bootstyle=INFO, command=self.load_values).grid(
+            row=3, column=0, pady=10
+        )
+        ttk.Button(self.page2_frame, text="Add Group", bootstyle=SUCCESS, command=self.add_group).grid(
+            row=3, column=1, pady=10
+        )
+        ttk.Button(self.page2_frame, text="Replicate Remaining", bootstyle=WARNING, command=self.replicate_groups).grid(
+            row=4, column=0, columnspan=2, pady=10
+        )
 
-        ttk.Button(frame, text="Load", bootstyle=SECONDARY,
-                   command=self.load_selected_group).grid(row=3, column=3, pady=5)
-        ttk.Button(frame, text="Replicate", bootstyle=WARNING,
-                   command=self.replicate_remaining).grid(row=3, column=2, pady=5)
-
-        ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS,
-                   command=self.create_new_column).grid(row=5, column=0, columnspan=4, pady=20)
-
-    # ---------------- LOGIC -----------------
+    # ---------------- FILE LOADERS -----------------
     def select_data_file(self):
-        """Pick main data file"""
         file_path = filedialog.askopenfilename(
             title="Select Data File",
-            filetypes=[("All Supported", "*.csv *.xlsx *.xls *.xlsb"),
-                       ("CSV files", "*.csv"),
-                       ("Excel files", "*.xlsx *.xls *.xlsb")]
+            filetypes=[("Excel/CSV Files", "*.csv *.xlsx *.xls *.xlsb")]
         )
         if file_path:
             self.data_file = file_path
-            self.data_label.config(text=file_path)
+            self.data_label.config(text=file_path.split("/")[-1])
 
     def select_req_file(self):
-        """Pick requirement Excel file"""
         file_path = filedialog.askopenfilename(
             title="Select Requirement File",
-            filetypes=[("Excel files", "*.xlsx")]
+            filetypes=[("Excel Files", "*.xlsx")]
         )
         if file_path:
             self.req_file = file_path
-            self.req_label.config(text=file_path)
+            self.req_label.config(text=file_path.split("/")[-1])
 
     def load_data(self):
-        """Load both data and requirement files"""
         if not self.data_file or not self.req_file:
-            ttk.Messagebox.show_error("Missing File", "Please select both files before loading.")
+            Messagebox.show_error("Please select both files before loading!", "Missing Files")
             return
 
-        # --- Load main data file ---
         try:
-            ext = self.data_file.split(".")[-1].lower()
-            if ext == "csv":
-                self.df = pd.read_csv(self.data_file)
-            elif ext in ["xlsx", "xls"]:
-                self.df = pd.read_excel(self.data_file)
-            elif ext == "xlsb":
+            if self.data_file.endswith(".xlsb"):
                 self.df = pd.read_excel(self.data_file, engine="pyxlsb")
             else:
-                raise ValueError("Unsupported file format.")
+                self.df = pd.read_excel(self.data_file) if self.data_file.endswith(("xlsx", "xls")) else pd.read_csv(self.data_file)
+
+            self.col_dropdown["values"] = list(self.df.columns)
+            self.notebook.tab(1, state="normal")
+            self.notebook.select(1)
+            Messagebox.show_info("Files loaded successfully!", "Success")
+
         except Exception as e:
-            ttk.Messagebox.show_error("Error Loading Data File", str(e))
-            return
+            Messagebox.show_error(f"Error loading data file:\n{e}", "Error")
 
-        # --- Load requirement file ---
-        try:
-            self.req_df = pd.read_excel(self.req_file)
-        except Exception as e:
-            ttk.Messagebox.show_error("Error Loading Requirement File", str(e))
-            return
-
-        # --- Enable next page ---
-        self.col_combo.config(values=list(self.df.columns))
-        self.notebook.tab(1, state="normal")  # unlock 2nd page
-        ttk.Messagebox.show_info("Success", f"Loaded {len(self.df)} rows and {len(self.df.columns)} columns.\n"
-                                            f"Requirement file loaded successfully.")
-        print("✅ Data & Requirement files loaded.")
-
-    def load_unique_values(self):
-        if self.df is None:
-            ttk.Messagebox.show_error("Error", "Load data first.")
-            return
+    # ---------------- PAGE 2 OPERATIONS -----------------
+    def load_values(self):
         col = self.col_var.get()
         if not col:
-            ttk.Messagebox.show_error("Error", "Select a column first.")
+            Messagebox.show_warning("Select a column first.", "No Column Selected")
             return
-        self.listbox.delete(0, END)
-        unique_vals = self.df[col].dropna().unique().tolist()
-        for val in unique_vals:
-            self.listbox.insert(END, str(val))
-        self.group_mapping.clear()
-        print(f"🔹 Unique values from '{col}': {unique_vals}")
+        values = sorted(self.df[col].dropna().unique().tolist())
+        self.value_listbox.delete(0, END)
+        for v in values:
+            self.value_listbox.insert(END, v)
 
-    def load_selected_group(self):
-        selected_indices = self.listbox.curselection()
-        selected_values = [self.listbox.get(i) for i in selected_indices]
-        group_name = self.group_entry.get().strip()
-        if not selected_values or not group_name:
-            ttk.Messagebox.show_error("Missing Input", "Select values and enter a group name.")
+    def add_group(self):
+        group_name = self.group_name_var.get().strip()
+        selected = [self.value_listbox.get(i) for i in self.value_listbox.curselection()]
+
+        if not group_name:
+            Messagebox.show_warning("Enter a group name.", "Missing Name")
+            return
+        if not selected:
+            Messagebox.show_warning("Select at least one value.", "No Selection")
             return
 
-        for val in selected_values:
-            self.group_mapping[val] = group_name
-        for i in reversed(selected_indices):
-            self.listbox.delete(i)
-        print(f"✅ {selected_values} → {group_name}")
+        self.group_mapping[group_name] = selected
+        Messagebox.show_info(f"Group '{group_name}' added with {len(selected)} items.", "Group Added")
 
-    def replicate_remaining(self):
-        remaining = self.listbox.get(0, END)
-        for val in remaining:
-            self.group_mapping[val] = val
-        self.listbox.delete(0, END)
-        print(f"🌀 Replicated remaining as self-groups → {remaining}")
+        for i in reversed(self.value_listbox.curselection()):
+            self.value_listbox.delete(i)
 
-    def create_new_column(self):
-        if self.df is None or not self.group_mapping:
-            ttk.Messagebox.show_error("Error", "No data or groups defined.")
-            return
-        col = self.col_var.get()
-        new_col = self.new_name.get().strip() or f"{col}_group"
-        self.df[new_col] = self.df[col].map(self.group_mapping).fillna(self.df[col])
-        print(f"\n📊 Created new column '{new_col}' with group mappings:")
-        print(self.group_mapping)
-        ttk.Messagebox.show_info("Done", f"New column '{new_col}' added successfully!")
+    def replicate_groups(self):
+        remaining = self.value_listbox.get(0, END)
+        for v in remaining:
+            self.group_mapping[v] = [v]
+        self.value_listbox.delete(0, END)
+        Messagebox.show_info("Remaining values replicated as individual groups.", "Replication Done")
 
 
 if __name__ == "__main__":
