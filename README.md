@@ -1,162 +1,159 @@
 ```
-import pandas as pd
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from tkinter import filedialog, messagebox
+from tkinter import StringVar, Listbox, END, MULTIPLE, filedialog
+import pandas as pd
 
-class DataGroupingApp(ttk.Window):
+
+class App(ttk.Window):
     def __init__(self):
-        super().__init__(title="Data Grouping Tool", themename="cosmo")
-        self.geometry("950x600")
-        self.datafile = None
-        self.reqfile = None
+        super().__init__(themename="cosmo")
+        self.title("Custom Column Builder")
+        self.geometry("780x550")
+        self.resizable(False, False)
+
+        # state
         self.df = None
+        self.group_mapping = {}
 
-        self.page1()
+        # notebook pages
+        self.notebook = ttk.Notebook(self)
+        self.page1 = ttk.Frame(self.notebook)
+        self.page2 = ttk.Frame(self.notebook)
+        self.notebook.add(self.page1, text="Step 1 – Select Data")
+        self.notebook.add(self.page2, text="Step 2 – Create Custom Column")
+        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-    # ---------- PAGE 1 ----------
-    def page1(self):
-        for widget in self.winfo_children():
-            widget.destroy()
+        self.build_page1()
+        self.build_page2()
 
-        frame = ttk.Frame(self, padding=30)
-        frame.pack(expand=True, fill="both")
+    # ---------------- Page 1 -----------------
+    def build_page1(self):
+        frame = ttk.Labelframe(self.page1, text="1️⃣ Select Data", padding=20)
+        frame.pack(fill=X, padx=30, pady=60)
 
-        ttk.Label(frame, text="Select Input Files", font=("Helvetica", 18, "bold")).pack(pady=20)
+        ttk.Button(frame, text="Select Data File", bootstyle=PRIMARY,
+                   command=self.select_data).grid(row=0, column=0, padx=10, pady=10)
+        ttk.Label(frame, text="").grid(row=0, column=1, padx=10)
+        ttk.Button(frame, text="Load", bootstyle=SUCCESS,
+                   command=self.load_data).grid(row=1, column=0, columnspan=2, pady=20)
 
-        self.data_path_var = ttk.StringVar()
-        self.req_path_var = ttk.StringVar()
+        self.data_path_label = ttk.Label(frame, text="No file selected")
+        self.data_path_label.grid(row=2, column=0, columnspan=2)
 
-        ttk.Label(frame, text="Select Data File (.xlsb):", bootstyle="primary").pack(anchor="w", pady=(10,0))
-        ttk.Entry(frame, textvariable=self.data_path_var, width=60, state="readonly").pack(pady=5)
-        ttk.Button(frame, text="Browse", bootstyle="info-outline", command=self.load_datafile).pack(pady=5)
+    # ---------------- Page 2 -----------------
+    def build_page2(self):
+        frame = ttk.Labelframe(self.page2, text="2️⃣ Create Custom Column", padding=20)
+        frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
-        ttk.Label(frame, text="Select Requirement File (.xlsx):", bootstyle="primary").pack(anchor="w", pady=(20,0))
-        ttk.Entry(frame, textvariable=self.req_path_var, width=60, state="readonly").pack(pady=5)
-        ttk.Button(frame, text="Browse", bootstyle="info-outline", command=self.load_reqfile).pack(pady=5)
+        ttk.Label(frame, text="Select Column:").grid(row=0, column=0, sticky=W, pady=5)
+        self.col_var = StringVar()
+        self.col_combo = ttk.Combobox(frame, textvariable=self.col_var, width=25, state="readonly")
+        self.col_combo.grid(row=0, column=1, padx=10)
 
-        self.next_btn = ttk.Button(frame, text="Next →", bootstyle="success", command=self.page2, state="disabled")
-        self.next_btn.pack(pady=40)
+        ttk.Label(frame, text="New Name:").grid(row=0, column=2, sticky=W, padx=20)
+        self.new_name = ttk.Entry(frame, width=20)
+        self.new_name.grid(row=0, column=3)
 
-    def load_datafile(self):
-        path = filedialog.askopenfilename(filetypes=[("Excel Binary Workbook", "*.xlsb")])
-        if path:
-            try:
-                import pyxlsb
-                self.df = pd.read_excel(path, engine="pyxlsb")
-                self.data_path_var.set(path)
-                self.datafile = path
-                self.check_ready()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to read xlsb file:\n{e}")
+        ttk.Button(frame, text="Load Unique Values", bootstyle=INFO,
+                   command=self.load_unique_values).grid(row=1, column=0, columnspan=4, pady=10)
 
-    def load_reqfile(self):
-        path = filedialog.askopenfilename(filetypes=[("Excel Workbook", "*.xlsx")])
-        if path:
-            self.req_path_var.set(path)
-            self.reqfile = path
-            self.check_ready()
+        self.listbox = Listbox(frame, height=10, width=40, selectmode=MULTIPLE)
+        self.listbox.grid(row=2, column=0, columnspan=2, rowspan=3, padx=10, pady=10)
 
-    def check_ready(self):
-        if self.datafile and self.reqfile:
-            self.next_btn.config(state="normal")
+        ttk.Label(frame, text="Group Name:").grid(row=2, column=2, sticky=W)
+        self.group_entry = ttk.Entry(frame, width=20)
+        self.group_entry.grid(row=2, column=3, pady=5)
 
-    # ---------- PAGE 2 ----------
-    def page2(self):
-        for widget in self.winfo_children():
-            widget.destroy()
+        ttk.Button(frame, text="Load", bootstyle=SECONDARY,
+                   command=self.load_selected_group).grid(row=3, column=3, pady=5)
+        ttk.Button(frame, text="Replicate", bootstyle=WARNING,
+                   command=self.replicate_remaining).grid(row=3, column=2, pady=5)
 
-        frame = ttk.Frame(self, padding=20)
-        frame.pack(fill="both", expand=True)
+        ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS,
+                   command=self.create_new_column).grid(row=5, column=0, columnspan=4, pady=20)
 
-        ttk.Label(frame, text="Create New Column", font=("Helvetica", 18, "bold")).pack(pady=15)
+    # ---------------- Logic -----------------
+    def select_data(self):
+        """Pick a CSV or Excel file"""
+        file_path = filedialog.askopenfilename(
+            title="Select Data File",
+            filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx *.xls")]
+        )
+        if file_path:
+            self.data_path_label.config(text=file_path)
+            self.file_path = file_path
 
-        top_frame = ttk.Frame(frame)
-        top_frame.pack(pady=10, fill="x")
+    def load_data(self):
+        """Read data and load column names"""
+        if not hasattr(self, "file_path"):
+            ttk.Messagebox.show_error("No file selected!", "Please choose a CSV or Excel file first.")
+            return
 
-        ttk.Label(top_frame, text="Select Column:", width=15).grid(row=0, column=0, sticky="w", padx=5)
-        self.col_var = ttk.StringVar()
-        col_menu = ttk.Combobox(top_frame, textvariable=self.col_var, values=list(self.df.columns), state="readonly")
-        col_menu.grid(row=0, column=1, padx=5)
-        col_menu.bind("<<ComboboxSelected>>", self.load_unique_values)
+        ext = self.file_path.split(".")[-1].lower()
+        try:
+            if ext == "csv":
+                self.df = pd.read_csv(self.file_path)
+            else:
+                self.df = pd.read_excel(self.file_path)
+            self.col_combo.config(values=list(self.df.columns))
+            ttk.Messagebox.show_info("Success", f"Loaded {len(self.df)} rows and {len(self.df.columns)} columns.")
+        except Exception as e:
+            ttk.Messagebox.show_error("Load Error", str(e))
 
-        ttk.Label(top_frame, text="New Column Name:", width=18).grid(row=0, column=2, sticky="w", padx=5)
-        self.newcol_var = ttk.StringVar()
-        ttk.Entry(top_frame, textvariable=self.newcol_var, width=25).grid(row=0, column=3, padx=5)
-
-        # Unique values section
-        mid_frame = ttk.Labelframe(frame, text="Unique Values", bootstyle="info", padding=10)
-        mid_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self.value_listbox = ttk.Listbox(mid_frame, selectmode="extended", height=15)
-        self.value_listbox.pack(side="left", fill="both", expand=True, padx=10)
-
-        scrollbar = ttk.Scrollbar(mid_frame, command=self.value_listbox.yview)
-        scrollbar.pack(side="left", fill="y")
-        self.value_listbox.config(yscrollcommand=scrollbar.set)
-
-        right_frame = ttk.Frame(mid_frame)
-        right_frame.pack(side="left", padx=10)
-
-        ttk.Label(right_frame, text="Group Name:").pack(pady=5)
-        self.group_name_var = ttk.StringVar()
-        ttk.Entry(right_frame, textvariable=self.group_name_var).pack(pady=5)
-
-        ttk.Button(right_frame, text="Add Group", bootstyle="primary", command=self.add_group).pack(pady=10)
-        ttk.Button(right_frame, text="Create Column", bootstyle="success", command=self.create_column).pack(pady=10)
-        ttk.Button(right_frame, text="Next →", bootstyle="info-outline", command=self.page2).pack(pady=10)
-
-        self.groups = {}
-        self.group_preview = ttk.Treeview(frame, columns=("Group", "Values"), show="headings", height=6)
-        self.group_preview.heading("Group", text="Group Name")
-        self.group_preview.heading("Values", text="Values")
-        self.group_preview.pack(fill="x", padx=20, pady=10)
-
-    def load_unique_values(self, event=None):
-        self.value_listbox.delete(0, "end")
+    def load_unique_values(self):
+        """Load unique values of selected column"""
+        if self.df is None:
+            ttk.Messagebox.show_error("Error", "Load data first.")
+            return
         col = self.col_var.get()
-        if col:
-            uniques = sorted(self.df[col].dropna().unique())
-            for val in uniques:
-                self.value_listbox.insert("end", str(val))
-        self.groups = {}
-        for item in self.group_preview.get_children():
-            self.group_preview.delete(item)
-
-    def add_group(self):
-        group_name = self.group_name_var.get().strip()
-        if not group_name:
-            messagebox.showwarning("Missing Input", "Please enter a group name.")
+        if not col:
+            ttk.Messagebox.show_error("Error", "Select a column first.")
             return
-        selected = [self.value_listbox.get(i) for i in self.value_listbox.curselection()]
-        if not selected:
-            messagebox.showwarning("Missing Selection", "Select values to group.")
-            return
-        self.groups[group_name] = selected
-        for i in reversed(self.value_listbox.curselection()):
-            self.value_listbox.delete(i)
-        self.group_preview.insert("", "end", values=(group_name, ", ".join(selected)))
-        self.group_name_var.set("")
 
-    def create_column(self):
-        newcol = self.newcol_var.get().strip()
+        self.listbox.delete(0, END)
+        unique_vals = self.df[col].dropna().unique().tolist()
+        for val in unique_vals:
+            self.listbox.insert(END, str(val))
+        self.group_mapping.clear()
+        print(f"🔹 Unique values from '{col}': {unique_vals}")
+
+    def load_selected_group(self):
+        """Map selected values to the given group name"""
+        selected_indices = self.listbox.curselection()
+        selected_values = [self.listbox.get(i) for i in selected_indices]
+        group_name = self.group_entry.get().strip()
+        if not selected_values or not group_name:
+            ttk.Messagebox.show_error("Missing Input", "Select values and enter a group name.")
+            return
+
+        for val in selected_values:
+            self.group_mapping[val] = group_name
+        for i in reversed(selected_indices):
+            self.listbox.delete(i)
+        print(f"✅ {selected_values} → {group_name}")
+
+    def replicate_remaining(self):
+        """Remaining values become their own groups"""
+        remaining = self.listbox.get(0, END)
+        for val in remaining:
+            self.group_mapping[val] = val
+        self.listbox.delete(0, END)
+        print(f"🌀 Replicated remaining as self groups → {remaining}")
+
+    def create_new_column(self):
+        """Add new column to DataFrame and refresh"""
+        if self.df is None or not self.group_mapping:
+            ttk.Messagebox.show_error("Error", "No data or groups defined.")
+            return
         col = self.col_var.get()
-        if not newcol or not col or not self.groups:
-            messagebox.showwarning("Incomplete", "Fill all fields and create groups first.")
-            return
+        new_col = self.new_name.get().strip() or f"{col}_group"
+        self.df[new_col] = self.df[col].map(self.group_mapping).fillna(self.df[col])
+        print(f"\n📊 Created new column '{new_col}' with group mappings:")
+        print(self.group_mapping)
+        ttk.Messagebox.show_info("Done", f"New column '{new_col}' added successfully!")
 
-        mapping = {}
-        for group, vals in self.groups.items():
-            for v in vals:
-                mapping[v] = group
 
-        self.df[newcol] = self.df[col].map(mapping)
-        messagebox.showinfo("Success", f"Column '{newcol}' created successfully!")
-
-        # Refresh Page
-        self.page2()
-
-# Run the app
 if __name__ == "__main__":
-    app = DataGroupingApp()
+    app = App()
     app.mainloop()
