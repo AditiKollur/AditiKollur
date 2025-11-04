@@ -5,11 +5,18 @@ from tkinter import StringVar, Listbox, END, MULTIPLE, filedialog, messagebox
 import pandas as pd
 
 
+dict_func = {
+    "Function_A": 2,
+    "Function_B": 3,
+    "Function_C": 4
+}
+
+
 class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("Custom Column Builder")
-        self.geometry("1100x750")  # 🟢 Increased size for more visible dropdowns
+        self.geometry("1100x700")  # Increased window size
         self.resizable(False, False)
 
         # internal state
@@ -20,13 +27,6 @@ class App(ttk.Window):
         self.group_mapping = {}
         self.mappings_df = None
 
-        # dict_func defines number of levels per functionality
-        self.dict_func = {
-            "Function_A": 2,
-            "Function_B": 3,
-            "Function_C": 4
-        }
-
         # notebook setup
         self.notebook = ttk.Notebook(self)
         self.page1 = ttk.Frame(self.notebook)
@@ -35,10 +35,10 @@ class App(ttk.Window):
 
         self.notebook.add(self.page1, text="Step 1 – Select Files")
         self.notebook.add(self.page2, text="Step 2 – Create Custom Column")
-        self.notebook.add(self.page3, text="Step 3 – Advanced Mapping")
+        self.notebook.add(self.page3, text="Step 3 – Function Mapping")
         self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        # Disable 2nd and 3rd tab initially
+        # Disable tabs 2 & 3 initially
         self.notebook.tab(1, state="disabled")
         self.notebook.tab(2, state="disabled")
 
@@ -52,14 +52,12 @@ class App(ttk.Window):
         frame.pack(fill=X, padx=30, pady=50)
 
         ttk.Label(frame, text="Select Data File (.csv/.xlsx/.xls/.xlsb):").grid(row=0, column=0, sticky=W, pady=5)
-        ttk.Button(frame, text="Browse", bootstyle=PRIMARY,
-                   command=self.select_data_file).grid(row=0, column=1, padx=10)
+        ttk.Button(frame, text="Browse", bootstyle=PRIMARY, command=self.select_data_file).grid(row=0, column=1, padx=10)
         self.data_label = ttk.Label(frame, text="No data file selected", width=60)
         self.data_label.grid(row=0, column=2, padx=10, pady=5)
 
         ttk.Label(frame, text="Select Requirement File (.xlsx):").grid(row=1, column=0, sticky=W, pady=5)
-        ttk.Button(frame, text="Browse", bootstyle=INFO,
-                   command=self.select_req_file).grid(row=1, column=1, padx=10)
+        ttk.Button(frame, text="Browse", bootstyle=INFO, command=self.select_req_file).grid(row=1, column=1, padx=10)
         self.req_label = ttk.Label(frame, text="No requirement file selected", width=60)
         self.req_label.grid(row=1, column=2, padx=10, pady=5)
 
@@ -99,223 +97,193 @@ class App(ttk.Window):
         ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS,
                    command=self.create_new_column).grid(row=5, column=0, columnspan=4, pady=20)
 
-        ttk.Button(frame, text="Proceed →", bootstyle=PRIMARY,
+        ttk.Button(frame, text="Next → Function Mapping", bootstyle=INFO,
                    command=self.proceed_to_page3).grid(row=6, column=0, columnspan=4, pady=10)
 
     # ---------------- PAGE 3 -----------------
     def build_page3(self):
-        self.page3_frame = ttk.Labelframe(self.page3, text="3️⃣ Advanced Mapping", padding=20)
-        self.page3_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
+        self.mapping_frame = ttk.Labelframe(self.page3, text="3️⃣ Function Mapping", padding=20)
+        self.mapping_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
-        ttk.Label(self.page3_frame, text="Configure additional mappings (4 rows)").grid(row=0, column=0, columnspan=6, pady=10)
+        headers = ["Column", "Functionality", "Level 1", "Level 2", "Level 3", "Level 4"]
+        for i, h in enumerate(headers):
+            ttk.Label(self.mapping_frame, text=h).grid(row=0, column=i, padx=10, pady=5)
 
-        self.mapping_entries = []
+        self.rows = []
+        for r in range(4):
+            col_entry = ttk.Entry(self.mapping_frame, width=15)
+            col_entry.insert(0, f"Header {r + 1}")
+            col_entry.grid(row=r + 1, column=0, padx=5, pady=5)
 
-        for i in range(4):
-            row_dict = {}
-            # Column text entry
-            col_var = StringVar()
-            col_entry = ttk.Entry(self.page3_frame, textvariable=col_var, width=20)
-            col_entry.insert(0, f"Header_{i+1}")
-            col_entry.grid(row=i + 1, column=0, padx=5, pady=5)
-            row_dict["column_name"] = col_var
-
-            # Functionality dropdown
             func_var = StringVar()
-            func_combo = ttk.Combobox(self.page3_frame, textvariable=func_var,
-                                      values=list(self.dict_func.keys()), state="readonly", width=20)
-            func_combo.grid(row=i + 1, column=1, padx=5)
+            func_combo = ttk.Combobox(self.mapping_frame, textvariable=func_var,
+                                      values=list(dict_func.keys()), width=15, state="readonly")
+            func_combo.grid(row=r + 1, column=1, padx=5, pady=5)
+
+            level_vars, level_combos = [], []
+            for j in range(4):
+                lvl_var = StringVar()
+                lvl_combo = ttk.Combobox(self.mapping_frame, textvariable=lvl_var,
+                                         width=15, state="disabled")
+                lvl_combo.grid(row=r + 1, column=j + 2, padx=5, pady=5)
+                level_vars.append(lvl_var)
+                level_combos.append(lvl_combo)
+
             func_combo.bind("<<ComboboxSelected>>",
-                            lambda e, row=i: self.load_levels_for_function(row))
-            row_dict["functionality"] = func_var
-            row_dict["levels"] = []
+                            lambda e, lvls=level_combos, fvar=func_var: self.populate_levels(lvls, fvar))
 
-            self.mapping_entries.append(row_dict)
+            self.rows.append((col_entry, func_var, func_combo, level_vars, level_combos))
 
-        self.submit_btn = ttk.Button(self.page3_frame, text="Submit", bootstyle=SUCCESS,
-                                     command=self.submit_mappings, state="disabled")
+        self.submit_btn = ttk.Button(self.mapping_frame, text="Submit", bootstyle=SUCCESS,
+                                     command=self.submit_mapping, state="disabled")
         self.submit_btn.grid(row=6, column=0, columnspan=6, pady=20)
-
-    def load_levels_for_function(self, row):
-        """Dynamically add level dropdowns based on selected function."""
-        row_info = self.mapping_entries[row]
-        func_name = row_info["functionality"].get()
-
-        # remove old level dropdowns if exist
-        for level in row_info["levels"]:
-            level["widget"].destroy()
-        row_info["levels"].clear()
-
-        if not func_name:
-            return
-
-        num_levels = self.dict_func[func_name]
-        all_options = list(self.df.columns)
-
-        def on_select(current_level):
-            """Unlock next level and filter out already selected values."""
-            selected_values = [lvl["var"].get() for lvl in row_info["levels"] if lvl["var"].get()]
-            if current_level + 1 < len(row_info["levels"]):
-                next_combo = row_info["levels"][current_level + 1]["widget"]
-                next_combo.config(state="readonly",
-                                  values=[v for v in all_options if v not in selected_values])
-
-            # Enable submit if all selected for at least one row
-            self.validate_submit_condition()
-
-        for j in range(num_levels):
-            lvl_var = StringVar()
-            lvl_combo = ttk.Combobox(self.page3_frame, textvariable=lvl_var, state="disabled", width=15)
-            lvl_combo.grid(row=row + 1, column=2 + j, padx=5)
-            lvl_combo.set(f"Level{j + 1}")
-            lvl_combo.bind("<<ComboboxSelected>>", lambda e, lvl=j: on_select(lvl))
-            row_info["levels"].append({"var": lvl_var, "widget": lvl_combo})
-
-        # Unlock first level
-        row_info["levels"][0]["widget"].config(state="readonly", values=all_options)
-
-    def validate_submit_condition(self):
-        """Check if at least one row has all levels selected."""
-        can_submit = False
-        for row in self.mapping_entries:
-            func = row["functionality"].get()
-            levels = [lvl["var"].get() for lvl in row["levels"]]
-            num_levels = self.dict_func.get(func, 0)
-            if func and num_levels > 0 and len([l for l in levels if l]) == num_levels:
-                can_submit = True
-            else:
-                # If function selected but not all levels filled, disable
-                if func and len([l for l in levels if l]) < num_levels:
-                    can_submit = False
-                    break
-        self.submit_btn.config(state="normal" if can_submit else "disabled")
-
-    def submit_mappings(self):
-        """Collect mappings and close GUI"""
-        mappings = []
-        for row in self.mapping_entries:
-            col_name = row["column_name"].get().strip()
-            func = row["functionality"].get()
-            levels = [lvl["var"].get() for lvl in row["levels"] if lvl["var"].get()]
-            if func and len(levels) == self.dict_func.get(func, 0):
-                mappings.append({
-                    "Column": col_name,
-                    "Functionality": func,
-                    "Levels": levels
-                })
-
-        if not mappings:
-            messagebox.showerror("Error", "Please make selections for at least one complete row.")
-            return
-
-        self.mappings_df = pd.DataFrame(mappings)
-        self.destroy()  # Close GUI
 
     # ---------------- LOGIC -----------------
     def select_data_file(self):
-        file_path = filedialog.askopenfilename(
+        path = filedialog.askopenfilename(
             title="Select Data File",
-            filetypes=[("All Supported", "*.csv *.xlsx *.xls *.xlsb"),
-                       ("CSV files", "*.csv"),
-                       ("Excel files", "*.xlsx *.xls *.xlsb")]
+            filetypes=[("All Supported", "*.csv *.xlsx *.xls *.xlsb")]
         )
-        if file_path:
-            self.data_file = file_path
-            self.data_label.config(text=file_path)
+        if path:
+            self.data_file = path
+            self.data_label.config(text=path)
 
     def select_req_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Requirement File",
-            filetypes=[("Excel files", "*.xlsx")]
-        )
-        if file_path:
-            self.req_file = file_path
-            self.req_label.config(text=file_path)
+        path = filedialog.askopenfilename(title="Select Requirement File", filetypes=[("Excel files", "*.xlsx")])
+        if path:
+            self.req_file = path
+            self.req_label.config(text=path)
 
     def load_data(self):
         if not self.data_file or not self.req_file:
-            messagebox.showerror("Missing File", "Please select both files before loading.")
+            messagebox.showerror("Missing File", "Please select both files.")
             return
-
         try:
-            ext = self.data_file.split(".")[-1].lower()
+            ext = self.data_file.split(".")[-1]
             if ext == "csv":
                 self.df = pd.read_csv(self.data_file)
             elif ext in ["xlsx", "xls"]:
                 self.df = pd.read_excel(self.data_file)
             elif ext == "xlsb":
                 self.df = pd.read_excel(self.data_file, engine="pyxlsb")
-        except Exception as e:
-            messagebox.showerror("Error Loading Data File", str(e))
-            return
-
-        try:
+            else:
+                raise ValueError("Unsupported format")
             self.req_df = pd.read_excel(self.req_file)
         except Exception as e:
-            messagebox.showerror("Error Loading Requirement File", str(e))
+            messagebox.showerror("Error", str(e))
             return
 
-        self.col_combo.config(values=list(self.df.columns))
+        string_cols = self.df.select_dtypes(include="object").columns.tolist()
+        self.col_combo.config(values=string_cols)
         self.notebook.tab(1, state="normal")
-        messagebox.showinfo("Success", f"✅ Loaded data ({len(self.df)} rows, {len(self.df.columns)} columns).")
+        messagebox.showinfo("Success", "Files loaded successfully!")
 
     def load_unique_values(self):
-        if self.df is None:
-            messagebox.showerror("Error", "Load data first.")
-            return
         col = self.col_var.get()
         if not col:
-            messagebox.showerror("Error", "Select a column first.")
+            messagebox.showerror("Error", "Select a column.")
             return
         self.listbox.delete(0, END)
-        unique_vals = self.df[col].dropna().unique().tolist()
-        for val in unique_vals:
-            self.listbox.insert(END, str(val))
+        vals = self.df[col].dropna().unique().tolist()
+        for v in vals:
+            self.listbox.insert(END, v)
         self.group_mapping.clear()
 
     def load_selected_group(self):
-        selected_indices = self.listbox.curselection()
-        selected_values = [self.listbox.get(i) for i in selected_indices]
-        group_name = self.group_entry.get().strip()
-        if not selected_values or not group_name:
-            messagebox.showerror("Missing Input", "Select values and enter a group name.")
+        sel = [self.listbox.get(i) for i in self.listbox.curselection()]
+        group = self.group_entry.get().strip()
+        if not sel or not group:
+            messagebox.showerror("Error", "Select values and enter a group name.")
             return
-
-        for val in selected_values:
-            self.group_mapping[val] = group_name
-        for i in reversed(selected_indices):
+        for v in sel:
+            self.group_mapping[v] = group
+        for i in reversed(self.listbox.curselection()):
             self.listbox.delete(i)
 
     def replicate_remaining(self):
-        remaining = self.listbox.get(0, END)
-        for val in remaining:
-            self.group_mapping[val] = val
+        for v in self.listbox.get(0, END):
+            self.group_mapping[v] = v
         self.listbox.delete(0, END)
 
     def create_new_column(self):
-        if self.df is None or not self.group_mapping:
-            messagebox.showerror("Error", "No data or groups defined.")
+        if not self.group_mapping:
+            messagebox.showerror("Error", "Define at least one group.")
             return
         col = self.col_var.get()
         new_col = self.new_name.get().strip() or f"{col}_group"
         self.df[new_col] = self.df[col].map(self.group_mapping).fillna(self.df[col])
-        messagebox.showinfo("Done", f"New column '{new_col}' added successfully!")
+        messagebox.showinfo("Success", f"New column '{new_col}' created!")
 
     def proceed_to_page3(self):
         if self.df is None:
-            messagebox.showerror("Error", "Please load data first.")
+            messagebox.showerror("Error", "Load data first.")
             return
         self.notebook.tab(2, state="normal")
         self.notebook.select(2)
 
+    def populate_levels(self, level_combos, func_var):
+        for combo in level_combos:
+            combo.set("")
+            combo.config(state="disabled")
 
-# ✅ Wrapper to launch GUI and return results
+        func = func_var.get()
+        n_levels = dict_func.get(func, 0)
+        available_cols = self.df.select_dtypes(include="object").columns.tolist()
+
+        for i in range(n_levels):
+            combo = level_combos[i]
+            combo.config(values=available_cols, state="readonly")
+            combo.set(f"Level {i + 1}")
+            combo.bind("<<ComboboxSelected>>",
+                       lambda e, idx=i, lvls=level_combos: self.update_next_levels(idx, lvls, available_cols))
+
+        self.validate_submit_button()
+
+    def update_next_levels(self, idx, level_combos, available_cols):
+        selected_vals = [combo.get() for combo in level_combos if combo.get()]
+        for i in range(idx + 1, len(level_combos)):
+            if level_combos[i].cget("state") != "disabled":
+                remaining = [c for c in available_cols if c not in selected_vals]
+                level_combos[i].config(values=remaining)
+        self.validate_submit_button()
+
+    def validate_submit_button(self):
+        enable = False
+        for row in self.rows:
+            func = row[1].get()
+            if func:
+                n_levels = dict_func.get(func, 0)
+                if all(row[3][i].get() for i in range(n_levels)):
+                    enable = True
+                else:
+                    enable = False
+                    break
+        self.submit_btn.config(state="normal" if enable else "disabled")
+
+    def submit_mapping(self):
+        data = []
+        for row in self.rows:
+            col_name = row[0].get()
+            func = row[1].get()
+            if not func:
+                continue
+            n_levels = dict_func.get(func, 0)
+            levels = [row[3][i].get() for i in range(n_levels)]
+            if all(levels):
+                d = {"Column": col_name, "Functionality": func}
+                for i, lvl in enumerate(levels):
+                    d[f"Level{i + 1}"] = lvl
+                data.append(d)
+
+        if not data:
+            messagebox.showerror("Error", "No valid selections made.")
+            return
+
+        self.mappings_df = pd.DataFrame(data)
+        self.destroy()  # close window
+
+
 def launch_gui():
     app = App()
     app.mainloop()
     return getattr(app, "df", None), getattr(app, "mappings_df", None)
-
-
-# Example usage
-if __name__ == "__main__":
-    df_result, mapping_result = launch_gui()
