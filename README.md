@@ -4,11 +4,17 @@ from ttkbootstrap.constants import *
 from tkinter import StringVar, Listbox, END, MULTIPLE, filedialog, messagebox
 import pandas as pd
 
-
+# --- Function dictionary and info ---
 dict_func = {
     "Function_A": 2,
     "Function_B": 3,
     "Function_C": 4
+}
+
+dict_func_info = {
+    "Function_A": "Function_A: Groups data at two levels — useful for summarization or aggregation tasks.",
+    "Function_B": "Function_B: Involves 3-level grouping, e.g., region → state → city.",
+    "Function_C": "Function_C: Multi-step mapping with 4 nested levels of hierarchy."
 }
 
 
@@ -16,10 +22,10 @@ class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("Custom Column Builder")
-        self.geometry("1100x700")  # Increased window size
+        self.geometry("1100x700")  # wide enough for 7 columns
         self.resizable(False, False)
 
-        # internal state
+        # Internal state
         self.data_file = None
         self.req_file = None
         self.df = None
@@ -27,7 +33,7 @@ class App(ttk.Window):
         self.group_mapping = {}
         self.mappings_df = None
 
-        # notebook setup
+        # Notebook setup
         self.notebook = ttk.Notebook(self)
         self.page1 = ttk.Frame(self.notebook)
         self.page2 = ttk.Frame(self.notebook)
@@ -38,7 +44,7 @@ class App(ttk.Window):
         self.notebook.add(self.page3, text="Step 3 – Function Mapping")
         self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
-        # Disable tabs 2 & 3 initially
+        # Disable later tabs initially
         self.notebook.tab(1, state="disabled")
         self.notebook.tab(2, state="disabled")
 
@@ -89,13 +95,11 @@ class App(ttk.Window):
         self.group_entry = ttk.Entry(frame, width=20)
         self.group_entry.grid(row=2, column=3, pady=5)
 
-        ttk.Button(frame, text="Load", bootstyle=SECONDARY,
-                   command=self.load_selected_group).grid(row=3, column=3, pady=5)
-        ttk.Button(frame, text="Replicate", bootstyle=WARNING,
-                   command=self.replicate_remaining).grid(row=3, column=2, pady=5)
-
-        ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS,
-                   command=self.create_new_column).grid(row=5, column=0, columnspan=4, pady=20)
+        ttk.Button(frame, text="Load", bootstyle=SECONDARY, command=self.load_selected_group).grid(row=3, column=3, pady=5)
+        ttk.Button(frame, text="Replicate", bootstyle=WARNING, command=self.replicate_remaining).grid(row=3, column=2, pady=5)
+        ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS, command=self.create_new_column).grid(
+            row=5, column=0, columnspan=4, pady=20
+        )
 
         ttk.Button(frame, text="Next → Function Mapping", bootstyle=INFO,
                    command=self.proceed_to_page3).grid(row=6, column=0, columnspan=4, pady=10)
@@ -105,7 +109,7 @@ class App(ttk.Window):
         self.mapping_frame = ttk.Labelframe(self.page3, text="3️⃣ Function Mapping", padding=20)
         self.mapping_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
-        headers = ["Column", "Functionality", "Level 1", "Level 2", "Level 3", "Level 4"]
+        headers = ["Column", "Functionality", " ", "Level 1", "Level 2", "Level 3", "Level 4"]
         for i, h in enumerate(headers):
             ttk.Label(self.mapping_frame, text=h).grid(row=0, column=i, padx=10, pady=5)
 
@@ -120,23 +124,25 @@ class App(ttk.Window):
                                       values=list(dict_func.keys()), width=15, state="readonly")
             func_combo.grid(row=r + 1, column=1, padx=5, pady=5)
 
+            info_btn = ttk.Button(self.mapping_frame, text="ℹ️", width=3, bootstyle=INFO,
+                                  command=lambda fvar=func_var: self.show_function_info(fvar))
+            info_btn.grid(row=r + 1, column=2, padx=5, pady=5)
+
             level_vars, level_combos = [], []
             for j in range(4):
                 lvl_var = StringVar()
-                lvl_combo = ttk.Combobox(self.mapping_frame, textvariable=lvl_var,
-                                         width=15, state="disabled")
-                lvl_combo.grid(row=r + 1, column=j + 2, padx=5, pady=5)
+                lvl_combo = ttk.Combobox(self.mapping_frame, textvariable=lvl_var, width=15, state="disabled")
+                lvl_combo.grid(row=r + 1, column=j + 3, padx=5, pady=5)
                 level_vars.append(lvl_var)
                 level_combos.append(lvl_combo)
 
             func_combo.bind("<<ComboboxSelected>>",
                             lambda e, lvls=level_combos, fvar=func_var: self.populate_levels(lvls, fvar))
-
             self.rows.append((col_entry, func_var, func_combo, level_vars, level_combos))
 
         self.submit_btn = ttk.Button(self.mapping_frame, text="Submit", bootstyle=SUCCESS,
                                      command=self.submit_mapping, state="disabled")
-        self.submit_btn.grid(row=6, column=0, columnspan=6, pady=20)
+        self.submit_btn.grid(row=6, column=0, columnspan=7, pady=20)
 
     # ---------------- LOGIC -----------------
     def select_data_file(self):
@@ -282,8 +288,21 @@ class App(ttk.Window):
         self.mappings_df = pd.DataFrame(data)
         self.destroy()  # close window
 
+    def show_function_info(self, func_var):
+        func_name = func_var.get()
+        if not func_name:
+            messagebox.showinfo("Function Info", "Please select a functionality first.")
+            return
+        desc = dict_func_info.get(func_name, "No description available for this functionality.")
+        messagebox.showinfo(f"Details – {func_name}", desc)
+
 
 def launch_gui():
     app = App()
     app.mainloop()
     return getattr(app, "df", None), getattr(app, "mappings_df", None)
+
+
+# --- Example Usage ---
+if __name__ == "__main__":
+    df, mapping_df = launch_gui()
