@@ -9,7 +9,7 @@ class App(ttk.Window):
     def __init__(self):
         super().__init__(themename="cosmo")
         self.title("Custom Column Builder")
-        self.geometry("900x700")
+        self.geometry("1100x750")  # 🟢 Increased size for more visible dropdowns
         self.resizable(False, False)
 
         # internal state
@@ -18,8 +18,9 @@ class App(ttk.Window):
         self.df = None
         self.req_df = None
         self.group_mapping = {}
+        self.mappings_df = None
 
-        # dict_func setup
+        # dict_func defines number of levels per functionality
         self.dict_func = {
             "Function_A": 2,
             "Function_B": 3,
@@ -106,7 +107,7 @@ class App(ttk.Window):
         self.page3_frame = ttk.Labelframe(self.page3, text="3️⃣ Advanced Mapping", padding=20)
         self.page3_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
 
-        ttk.Label(self.page3_frame, text="Configure additional mappings (4 rows)").grid(row=0, column=0, columnspan=5, pady=10)
+        ttk.Label(self.page3_frame, text="Configure additional mappings (4 rows)").grid(row=0, column=0, columnspan=6, pady=10)
 
         self.mapping_entries = []
 
@@ -115,6 +116,7 @@ class App(ttk.Window):
             # Column text entry
             col_var = StringVar()
             col_entry = ttk.Entry(self.page3_frame, textvariable=col_var, width=20)
+            col_entry.insert(0, f"Header_{i+1}")
             col_entry.grid(row=i + 1, column=0, padx=5, pady=5)
             row_dict["column_name"] = col_var
 
@@ -132,7 +134,7 @@ class App(ttk.Window):
 
         self.submit_btn = ttk.Button(self.page3_frame, text="Submit", bootstyle=SUCCESS,
                                      command=self.submit_mappings, state="disabled")
-        self.submit_btn.grid(row=6, column=0, columnspan=5, pady=20)
+        self.submit_btn.grid(row=6, column=0, columnspan=6, pady=20)
 
     def load_levels_for_function(self, row):
         """Dynamically add level dropdowns based on selected function."""
@@ -151,16 +153,15 @@ class App(ttk.Window):
         all_options = list(self.df.columns)
 
         def on_select(current_level):
-            """Unlock next level and filter values."""
+            """Unlock next level and filter out already selected values."""
             selected_values = [lvl["var"].get() for lvl in row_info["levels"] if lvl["var"].get()]
             if current_level + 1 < len(row_info["levels"]):
                 next_combo = row_info["levels"][current_level + 1]["widget"]
                 next_combo.config(state="readonly",
                                   values=[v for v in all_options if v not in selected_values])
 
-            # Enable submit if at least one selection made
-            if any(lvl["var"].get() for lvl in row_info["levels"]):
-                self.submit_btn.config(state="normal")
+            # Enable submit if all selected for at least one row
+            self.validate_submit_condition()
 
         for j in range(num_levels):
             lvl_var = StringVar()
@@ -168,11 +169,26 @@ class App(ttk.Window):
             lvl_combo.grid(row=row + 1, column=2 + j, padx=5)
             lvl_combo.set(f"Level{j + 1}")
             lvl_combo.bind("<<ComboboxSelected>>", lambda e, lvl=j: on_select(lvl))
-
             row_info["levels"].append({"var": lvl_var, "widget": lvl_combo})
 
         # Unlock first level
         row_info["levels"][0]["widget"].config(state="readonly", values=all_options)
+
+    def validate_submit_condition(self):
+        """Check if at least one row has all levels selected."""
+        can_submit = False
+        for row in self.mapping_entries:
+            func = row["functionality"].get()
+            levels = [lvl["var"].get() for lvl in row["levels"]]
+            num_levels = self.dict_func.get(func, 0)
+            if func and num_levels > 0 and len([l for l in levels if l]) == num_levels:
+                can_submit = True
+            else:
+                # If function selected but not all levels filled, disable
+                if func and len([l for l in levels if l]) < num_levels:
+                    can_submit = False
+                    break
+        self.submit_btn.config(state="normal" if can_submit else "disabled")
 
     def submit_mappings(self):
         """Collect mappings and close GUI"""
@@ -181,7 +197,7 @@ class App(ttk.Window):
             col_name = row["column_name"].get().strip()
             func = row["functionality"].get()
             levels = [lvl["var"].get() for lvl in row["levels"] if lvl["var"].get()]
-            if col_name and func and levels:
+            if func and len(levels) == self.dict_func.get(func, 0):
                 mappings.append({
                     "Column": col_name,
                     "Functionality": func,
@@ -189,14 +205,11 @@ class App(ttk.Window):
                 })
 
         if not mappings:
-            messagebox.showerror("Error", "Please make selections in at least one row.")
+            messagebox.showerror("Error", "Please make selections for at least one complete row.")
             return
 
         self.mappings_df = pd.DataFrame(mappings)
-        print("\n✅ Final Mapping DataFrame:")
-        print(self.mappings_df)
-        messagebox.showinfo("Done", "Mappings submitted successfully!")
-        self.destroy()
+        self.destroy()  # Close GUI
 
     # ---------------- LOGIC -----------------
     def select_data_file(self):
@@ -296,6 +309,13 @@ class App(ttk.Window):
         self.notebook.select(2)
 
 
-if __name__ == "__main__":
+# ✅ Wrapper to launch GUI and return results
+def launch_gui():
     app = App()
     app.mainloop()
+    return getattr(app, "df", None), getattr(app, "mappings_df", None)
+
+
+# Example usage
+if __name__ == "__main__":
+    df_result, mapping_result = launch_gui()
