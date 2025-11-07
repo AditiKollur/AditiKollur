@@ -1,125 +1,67 @@
 ```
-import os
+import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from openpyxl import load_workbook, Workbook
-from copy import copy
-import pandas as pd
 
-# ------------------ CONFIG ------------------
-TAB_COLORS = ["FFC0CB", "90EE90", "87CEEB", "FFFF99", "C0C0C0", "FFD580"]  # pink, green, blue, yellow, grey, orange
-SINGLE_INSTANCE_SHEETS = {"ReadMe", "Taxonomy Dropdowns"}
-SKIP_SHEETS = {"Sample"}
-START_ROW = 10  # consolidation starts from this row (10th row as header)
+START_ROW = 10  # start reading from this row (10th row)
+OUTPUT_SHEET_NAME = "Consolidated"
 
-# ------------------ FILE SELECTION ------------------
-def select_files():
-    return filedialog.askopenfilenames(
-        title="Select Excel files to combine",
-        filetypes=[("Excel Files", "*.xlsx *.xlsm")]
-    )
+def consolidate_excel(file_path):
+    # Read all sheet names
+    xls = pd.ExcelFile(file_path)
+    all_dfs = []
 
-# ------------------ SHEET COPY (WITH FORMATTING) ------------------
-def copy_sheet(source_ws, target_ws):
-    for r_idx, row in enumerate(source_ws.iter_rows(), start=1):
-        for c_idx, cell in enumerate(row, start=1):
-            new_cell = target_ws.cell(row=r_idx, column=c_idx, value=cell.value)
-            if cell.has_style:
-                new_cell.font = copy(cell.font)
-                new_cell.border = copy(cell.border)
-                new_cell.fill = copy(cell.fill)
-                new_cell.number_format = cell.number_format
-                new_cell.protection = copy(cell.protection)
-                new_cell.alignment = copy(cell.alignment)
+    for sheet in xls.sheet_names:
+        # Read each sheet starting from row 10 (header = row 10)
+        try:
+            df = pd.read_excel(file_path, sheet_name=sheet, header=START_ROW - 1)
+            df["Source_Sheet"] = sheet  # add sheet name for traceability
+            all_dfs.append(df)
+        except Exception as e:
+            print(f"Skipping {sheet} due to error: {e}")
 
-    # copy merged cells
-    for merged_range in source_ws.merged_cells.ranges:
-        target_ws.merge_cells(str(merged_range))
+    # Concatenate all sheets
+    if not all_dfs:
+        print("No data found to consolidate.")
+        return None
 
-# ------------------ MAIN FUNCTION ------------------
-def combine_excels(files, output_path=None):
-    if not files:
-        raise ValueError("No files selected")
+    consolidated_df = pd.concat(all_dfs, ignore_index=True)
+    return consolidated_df
 
-    combined_wb = Workbook()
-    combined_wb.remove(combined_wb.active)  # remove default empty sheet
 
-    color_index = 0
-    added_single_instance = set()
-    consolidated_dfs = []
-
-    for file_path in files:
-        wb = load_workbook(file_path, data_only=True)
-        color = TAB_COLORS[color_index % len(TAB_COLORS)]
-        color_index += 1
-
-        for sheet_name in wb.sheetnames:
-            if sheet_name in SKIP_SHEETS:
-                continue
-
-            # handle single-instance sheets only once
-            if sheet_name in SINGLE_INSTANCE_SHEETS:
-                if sheet_name in added_single_instance:
-                    continue
-                added_single_instance.add(sheet_name)
-
-            src_ws = wb[sheet_name]
-            new_name = sheet_name
-            suffix = 1
-            while new_name in combined_wb.sheetnames:
-                new_name = f"{sheet_name}_{suffix}"
-                suffix += 1
-
-            tgt_ws = combined_wb.create_sheet(title=new_name)
-            tgt_ws.sheet_properties.tabColor = color
-            copy_sheet(src_ws, tgt_ws)
-
-            # For consolidation: skip single-instance and sample sheets
-            if sheet_name not in SINGLE_INSTANCE_SHEETS:
-                df = pd.read_excel(file_path, sheet_name=sheet_name, header=START_ROW - 1)
-                df["Source_File"] = os.path.basename(file_path)
-                df["Source_Sheet"] = sheet_name
-                consolidated_dfs.append(df)
-
-    # ------------------ CONSOLIDATED SHEET ------------------
-    if consolidated_dfs:
-        final_df = pd.concat(consolidated_dfs, ignore_index=True)
-        cons_ws = combined_wb.create_sheet("Consolidated", 0)  # make first sheet
-        for r_idx, row in enumerate(final_df.itertuples(index=False), start=2):
-            for c_idx, value in enumerate(row, start=1):
-                cons_ws.cell(row=r_idx, column=c_idx, value=value)
-        # write header
-        for c_idx, col_name in enumerate(final_df.columns, start=1):
-            cons_ws.cell(row=1, column=c_idx, value=col_name)
-
-    # ------------------ SAVE ------------------
-    if not output_path:
-        output_path = filedialog.asksaveasfilename(
-            title="Save Combined File",
-            defaultextension=".xlsx",
-            filetypes=[("Excel Workbook", "*.xlsx")]
-        )
-        if not output_path:
-            return
-
-    combined_wb.save(output_path)
-    return output_path
-
-# ------------------ RUN GUI ------------------
-def run_gui():
+def main():
     root = tk.Tk()
     root.withdraw()
-    messagebox.showinfo("Excel Combiner", "Select Excel files to combine")
-    files = select_files()
-    if not files:
-        messagebox.showinfo("Cancelled", "No files selected")
+
+    messagebox.showinfo("Select File", "Choose the Excel file to consolidate.")
+    file_path = filedialog.askopenfilename(
+        title="Select Excel file",
+        filetypes=[("Excel files", "*.xlsx *.xlsm *.xls")]
+    )
+
+    if not file_path:
+        messagebox.showinfo("Cancelled", "No file selected.")
         return
-    try:
-        out = combine_excels(files)
-        if out:
-            messagebox.showinfo("Success", f"Combined workbook saved:\n{out}")
-    except Exception as e:
-        messagebox.showerror("Error", str(e))
+
+    consolidated_df = consolidate_excel(file_path)
+    if consolidated_df is None:
+        messagebox.showinfo("No Data", "No valid sheets to consolidate.")
+        return
+
+    # Save the consolidated data
+    save_path = filedialog.asksaveasfilename(
+        title="Save Consolidated File As",
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")]
+    )
+    if not save_path:
+        return
+
+    with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
+        consolidated_df.to_excel(writer, index=False, sheet_name=OUTPUT_SHEET_NAME)
+
+    messagebox.showinfo("Success", f"Consolidated file saved at:\n{save_path}")
+
 
 if __name__ == "__main__":
-    run_gui()
+    main()
