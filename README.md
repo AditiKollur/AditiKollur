@@ -6,14 +6,13 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.comments import Comment
 from copy import copy
 
-# --- SETTINGS ---
+# ---------- CONFIG ----------
 TAB_COLORS = ["FFC0CB", "90EE90", "87CEEB", "FFFF99", "C0C0C0", "FFD580"]  # pink, light green, sky blue, yellow, grey, light orange
 SKIP_SHEETS = {"Sample"}
 SINGLE_INSTANCE_SHEETS = {"ReadMe", "Taxonomy Dropdowns"}
-START_ROW = 10  # treat row 10 as header in each sheet
+START_ROW = 10  # use row 10 as header; consolidate rows 11..end
 
-# --- HELPERS ---
-
+# ---------- HELPERS ----------
 def select_files_dialog():
     return filedialog.askopenfilenames(
         title="Select Excel files to combine",
@@ -21,7 +20,7 @@ def select_files_dialog():
     )
 
 def safe_copy_cell(src_cell, tgt_ws, tgt_row, tgt_col):
-    """Create target cell at (tgt_row, tgt_col) copying value & style from src_cell."""
+    """Copy value + common styles from src_cell into tgt_ws[tgt_row, tgt_col]."""
     tgt_cell = tgt_ws.cell(row=tgt_row, column=tgt_col, value=src_cell.value)
     try:
         if src_cell.has_style:
@@ -40,7 +39,6 @@ def safe_copy_cell(src_cell, tgt_ws, tgt_row, tgt_col):
             pass
     if src_cell.hyperlink:
         try:
-            # try to copy hyperlink object
             tgt_cell._hyperlink = copy(src_cell.hyperlink)
         except Exception:
             try:
@@ -49,12 +47,9 @@ def safe_copy_cell(src_cell, tgt_ws, tgt_row, tgt_col):
                 pass
     return tgt_cell
 
-def copy_sheet_contents(src_ws, tgt_ws):
-    """
-    Copy full sheet contents + formatting.
-    Uses enumerate(...) to avoid accessing .col_idx on MergedCell.
-    """
-    # Column widths
+def copy_full_sheet(src_ws, tgt_ws):
+    """Copy entire sheet contents and formatting from src_ws to tgt_ws (used for per-sheet copy)."""
+    # copy column widths
     for col_letter, dim in src_ws.column_dimensions.items():
         try:
             if dim.width is not None:
@@ -62,15 +57,15 @@ def copy_sheet_contents(src_ws, tgt_ws):
         except Exception:
             pass
 
-    # Row heights
-    for row_idx, dim in src_ws.row_dimensions.items():
+    # copy row heights
+    for r_idx, dim in src_ws.row_dimensions.items():
         try:
-            if dim.height is not None:
-                tgt_ws.row_dimensions[row_idx].height = dim.height
+            if getattr(dim, "height", None) is not None:
+                tgt_ws.row_dimensions[r_idx].height = dim.height
         except Exception:
             pass
 
-    # Page setup / margins / print options (best-effort)
+    # copy simple page setup/margins best-effort
     try:
         tgt_ws.page_setup = copy(src_ws.page_setup)
         tgt_ws.print_options = copy(src_ws.print_options)
@@ -78,19 +73,19 @@ def copy_sheet_contents(src_ws, tgt_ws):
     except Exception:
         pass
 
-    # Freeze panes
+    # freeze panes
     try:
         if src_ws.freeze_panes:
             tgt_ws.freeze_panes = src_ws.freeze_panes
     except Exception:
         pass
 
-    # Copy all cells using enumerate to compute column index
+    # copy cells (use enumerate to avoid MergedCell.col_idx)
     for r_idx, row in enumerate(src_ws.iter_rows(), start=1):
         for c_idx, src_cell in enumerate(row, start=1):
             safe_copy_cell(src_cell, tgt_ws, r_idx, c_idx)
 
-    # Copy merged cells AFTER values copied
+    # copy merged cell ranges after values
     try:
         for merged in src_ws.merged_cells.ranges:
             try:
@@ -100,67 +95,99 @@ def copy_sheet_contents(src_ws, tgt_ws):
     except Exception:
         pass
 
-def copy_range_with_formatting(src_ws, tgt_ws, src_start_row, tgt_start_row):
+def copy_block_to_consolidated(src_ws, cons_ws, src_start_row, cons_start_row):
     """
-    Copy rows from src_start_row..end from src_ws into tgt_ws starting at tgt_start_row.
-    Returns the next free row in target.
+    Copy rows src_start_row..src_end (src_end = src_ws.max_row) into cons_ws starting at cons_start_row.
+    Returns next free row in consolidated (after the appended block).
+    Also copies merged ranges inside the copied block (adjusted to consolidated coordinates).
     """
     max_row = src_ws.max_row
     max_col = src_ws.max_column
-    tgt_row = tgt_start_row
+    tgt_row = cons_start_row
 
+    # Copy row-by-row
     for r in range(src_start_row, max_row + 1):
         for c in range(1, max_col + 1):
             src_cell = src_ws.cell(row=r, column=c)
-            safe_copy_cell(src_cell, tgt_ws, tgt_row, c)
+            safe_copy_cell(src_cell, cons_ws, tgt_row, c)
         tgt_row += 1
+
+    # Copy merged ranges that lie (partially or fully) within src_start_row..max_row
+    try:
+        for merged in src_ws.merged_cells.ranges:
+            # merged is a CellRange; get its bounds
+            min_col, min_row, max_col, max_row = merged.bounds  # bounds -> (min_col, min_row, max_col, max_row)
+            # if the merged range intersects the copied area
+            if max_row >= src_start_row and min_row <= src_ws.max_row:
+                # determine overlap portion to map relative to consolidated block
+                # Only copy the portion that sits at/after src_start_row.
+                # We will map the top row of the source copy area to cons_start_row
+                # offset = cons_start_row - src_start_row
+                offset = cons_start_row - src_start_row
+                new_min_row = min_row + offset
+                new_max_row = max_row + offset
+                try:
+                    cons_ws.merge_cells(start_row=new_min_row, start_column=min_col,
+                                        end_row=new_max_row, end_column=max_col)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     return tgt_row
 
-# --- MAIN COMBINE FUNCTION ---
-
+# ---------- MAIN FUNCTION ----------
 def combine_excels(files, output_path=None):
     if not files:
         raise ValueError("No files provided")
 
     combined_wb = Workbook()
-    # remove default if present
+    # remove default sheet if present
     if combined_wb.active and combined_wb.active.title == "Sheet":
         combined_wb.remove(combined_wb.active)
 
     used_single_instance = set()
     color_index = 0
-    sheets_for_consolidation = []
 
-    # Copy sheets from each file into combined workbook
+    # Create consolidated sheet first (so we can append to it as we go)
+    cons_ws = combined_wb.create_sheet(title="Consolidated")
+    try:
+        cons_ws.sheet_properties.tabColor = "ADD8E6"
+    except Exception:
+        pass
+    cons_next_row = 1
+    header_written = False
+
     for file_path in files:
         if not os.path.isfile(file_path):
             continue
         try:
             wb = load_workbook(file_path, data_only=False)
         except Exception as e:
-            print(f"Warning: skipping {file_path} (load error: {e})")
+            print(f"Warning: skipping {file_path} due to load error: {e}")
             continue
 
         tab_color = TAB_COLORS[color_index % len(TAB_COLORS)]
         color_index += 1
 
         for sheet_name in wb.sheetnames:
+            # Skip always
             if sheet_name in SKIP_SHEETS:
                 continue
+            # Skip single-instance if already added once
             if sheet_name in SINGLE_INSTANCE_SHEETS and sheet_name in used_single_instance:
                 continue
 
             src_ws = wb[sheet_name]
+
+            # --- 1) copy full sheet into combined workbook (preserve formatting) ---
             tgt_name = sheet_name
             suffix = 1
             while tgt_name in combined_wb.sheetnames:
                 tgt_name = f"{sheet_name}_{suffix}"
                 suffix += 1
-
             tgt_ws = combined_wb.create_sheet(title=tgt_name)
-            copy_sheet_contents(src_ws, tgt_ws)
-
-            # Set per-file tab color
+            copy_full_sheet(src_ws, tgt_ws)
             try:
                 tgt_ws.sheet_properties.tabColor = tab_color
             except Exception:
@@ -168,53 +195,38 @@ def combine_excels(files, output_path=None):
 
             if sheet_name in SINGLE_INSTANCE_SHEETS:
                 used_single_instance.add(sheet_name)
+                # Do not include these sheets in consolidated
+                continue
+
+            # --- 2) append rows START_ROW..end to Consolidated (treat START_ROW as header) ---
+            if src_ws.max_row < START_ROW:
+                continue  # nothing to copy from this sheet
+
+            # If header not written yet, copy header row (START_ROW) into consolidated once
+            if not header_written:
+                # copy header row (START_ROW)
+                for c in range(1, src_ws.max_column + 1):
+                    src_cell = src_ws.cell(row=START_ROW, column=c)
+                    safe_copy_cell(src_cell, cons_ws, cons_next_row, c)
+                header_written = True
+                cons_next_row += 1
+                # copy data rows START_ROW+1 .. end
+                cons_next_row = copy_block_to_consolidated(src_ws, cons_ws, START_ROW + 1, cons_next_row)
             else:
-                # save reference to target sheet (in combined_wb) for consolidation
-                sheets_for_consolidation.append(tgt_ws)
+                # header already written, only append data rows START_ROW+1 .. end
+                cons_next_row = copy_block_to_consolidated(src_ws, cons_ws, START_ROW + 1, cons_next_row)
 
-    # Build Consolidated sheet
-    cons_ws = combined_wb.create_sheet(title="Consolidated")
-    try:
-        cons_ws.sheet_properties.tabColor = "ADD8E6"
-    except Exception:
-        pass
+            # add one blank row between appended blocks for readability
+            cons_next_row += 1
 
-    tgt_row = 1
-    header_written = False
-
-    for ws in sheets_for_consolidation:
-        # ensure sheet has at least START_ROW rows
-        if ws.max_row < START_ROW:
-            continue
-
-        # If header not yet written: copy row START_ROW as header + style
-        if not header_written:
-            # Copy header row only (START_ROW) -> place at tgt_row
-            max_col = ws.max_column
-            for c in range(1, max_col + 1):
-                src_cell = ws.cell(row=START_ROW, column=c)
-                safe_copy_cell(src_cell, cons_ws, tgt_row, c)
-            header_written = True
-            tgt_row += 1  # move below header
-
-            # Copy data rows (START_ROW+1 .. end)
-            tgt_row = copy_range_with_formatting(ws, cons_ws, START_ROW + 1, tgt_row)
-        else:
-            # Only append data rows (skip header)
-            tgt_row = copy_range_with_formatting(ws, cons_ws, START_ROW + 1, tgt_row)
-
-        # blank row between blocks for readability
-        tgt_row += 1
-
-    # If no header was written (no eligible sheets), leave Consolidated empty or remove it
+    # If header never written (no eligible sheets), remove consolidated sheet
     if not header_written:
-        # remove the empty consolidated sheet
         try:
             combined_wb.remove(cons_ws)
         except Exception:
             pass
 
-    # Save file (ask if not specified)
+    # Save final workbook
     if not output_path:
         output_path = filedialog.asksaveasfilename(
             title="Save Combined Excel As",
@@ -227,8 +239,7 @@ def combine_excels(files, output_path=None):
     combined_wb.save(output_path)
     return output_path
 
-# --- GUI RUNNER ---
-
+# ---------- GUI ----------
 def run_gui():
     root = tk.Tk()
     root.withdraw()
