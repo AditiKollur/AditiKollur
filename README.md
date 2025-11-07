@@ -1,327 +1,98 @@
 ```
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from tkinter import StringVar, Listbox, END, MULTIPLE, filedialog, messagebox
-import pandas as pd
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from openpyxl import load_workbook, Workbook
+from openpyxl.utils.exceptions import InvalidFileException
+from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.styles import PatternFill
 
-# --- Function dictionary and info ---
-dict_func = {
-    "Function_A": 2,
-    "Function_B": 3,
-    "Function_C": 4
-}
+# Define distinct tab colors for each file
+TAB_COLORS = ["FFC0CB", "90EE90", "87CEEB", "FFFF99", "C0C0C0", "FFD580"]  # pink, light green, sky blue, yellow, grey, light orange
 
-dict_func_info = {
-    "Function_A": "Function_A: Groups data at two levels — useful for summarization or aggregation tasks.",
-    "Function_B": "Function_B: Involves 3-level grouping, e.g., region → state → city.",
-    "Function_C": "Function_C: Multi-step mapping with 4 nested levels of hierarchy."
-}
+# Sheets to skip or include once
+SKIP_SHEETS = ["Sample"]
+SINGLE_INSTANCE_SHEETS = ["ReadMe", "Taxonomy Dropdowns"]
 
+def select_files():
+    """Open file dialog to select multiple Excel files."""
+    files = filedialog.askopenfilenames(
+        title="Select Excel Files",
+        filetypes=[("Excel Files", "*.xlsx *.xlsm *.xltx *.xltm")]
+    )
+    return list(files)
 
-class App(ttk.Window):
-    def __init__(self):
-        super().__init__(themename="cosmo")
-        self.title("Custom Column Builder")
-        self.geometry("1100x700")  # wide enough for all pages
-        self.resizable(False, False)
+def combine_excels_with_colors(files):
+    """Combine all sheets from selected Excel files into one, preserving formatting."""
+    if not files:
+        messagebox.showerror("Error", "No files selected.")
+        return
 
-        # state
-        self.data_file = None
-        self.req_file = None
-        self.df = None
-        self.req_df = None
-        self.group_mapping = {}
-        self.mappings_df = None
+    combined_wb = Workbook()
+    combined_ws = combined_wb.active
+    combined_ws.title = "Temp"  # Placeholder sheet to remove later
 
-        # notebook setup
-        self.notebook = ttk.Notebook(self)
-        self.page1 = ttk.Frame(self.notebook)
-        self.page2 = ttk.Frame(self.notebook)
-        self.page3 = ttk.Frame(self.notebook)
+    used_single_instance = set()
+    color_index = 0
 
-        self.notebook.add(self.page1, text="Step 1 – Select Files")
-        self.notebook.add(self.page2, text="Step 2 – Create Custom Column")
-        self.notebook.add(self.page3, text="Step 3 – Function Mapping")
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
-
-        # disable later pages initially
-        self.notebook.tab(1, state="disabled")
-        self.notebook.tab(2, state="disabled")
-
-        self.build_page1()
-        self.build_page2()
-        self.build_page3()
-
-    # ---------------- PAGE 1 -----------------
-    def build_page1(self):
-        frame = ttk.Labelframe(self.page1, text="1️⃣ File Selection", padding=20)
-        frame.pack(fill=X, padx=30, pady=50)
-
-        ttk.Label(frame, text="Select Data File (.csv/.xlsx/.xls/.xlsb):").grid(row=0, column=0, sticky=W, pady=5)
-        ttk.Button(frame, text="Browse", bootstyle=PRIMARY, command=self.select_data_file).grid(row=0, column=1, padx=10)
-        self.data_label = ttk.Label(frame, text="No data file selected", width=60)
-        self.data_label.grid(row=0, column=2, padx=10, pady=5)
-
-        ttk.Label(frame, text="Select Requirement File (.xlsx):").grid(row=1, column=0, sticky=W, pady=5)
-        ttk.Button(frame, text="Browse", bootstyle=INFO, command=self.select_req_file).grid(row=1, column=1, padx=10)
-        self.req_label = ttk.Label(frame, text="No requirement file selected", width=60)
-        self.req_label.grid(row=1, column=2, padx=10, pady=5)
-
-        ttk.Button(frame, text="Load Data", bootstyle=SUCCESS, command=self.load_data).grid(
-            row=2, column=0, columnspan=3, pady=30
-        )
-
-    # ---------------- PAGE 2 -----------------
-    def build_page2(self):
-        frame = ttk.Labelframe(self.page2, text="2️⃣ Create Custom Column", padding=20)
-        frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-        # column and name input
-        ttk.Label(frame, text="Select Column:").grid(row=0, column=0, sticky=W, pady=5)
-        self.col_var = StringVar()
-        self.col_combo = ttk.Combobox(frame, textvariable=self.col_var, width=25, state="readonly")
-        self.col_combo.grid(row=0, column=1, padx=10)
-
-        ttk.Label(frame, text="New Name:").grid(row=0, column=2, sticky=W, padx=20)
-        self.new_name = ttk.Entry(frame, width=20)
-        self.new_name.grid(row=0, column=3)
-
-        ttk.Button(frame, text="Load Unique Values", bootstyle=INFO,
-                   command=self.load_unique_values).grid(row=1, column=0, columnspan=4, pady=10)
-
-        # swapped positions: group entry on left, listbox on right
-        ttk.Label(frame, text="Group Name:").grid(row=2, column=0, sticky=W)
-        self.group_entry = ttk.Entry(frame, width=25)
-        self.group_entry.grid(row=2, column=1, pady=5, padx=5, sticky=W)
-
-        self.listbox = Listbox(frame, height=12, width=40, selectmode=MULTIPLE)
-        self.listbox.grid(row=2, column=2, rowspan=3, padx=10, pady=10, sticky="n")
-
-        # buttons rearranged
-        ttk.Button(frame, text="Load", bootstyle=SECONDARY,
-                   command=self.load_selected_group).grid(row=3, column=0, columnspan=2, pady=10)
-        ttk.Button(frame, text="Replicate Remaining", bootstyle=WARNING,
-                   command=self.replicate_remaining).grid(row=4, column=0, columnspan=2, pady=5)
-        ttk.Button(frame, text="Create New Column", bootstyle=SUCCESS,
-                   command=self.create_new_column).grid(row=5, column=0, columnspan=4, pady=20)
-        ttk.Button(frame, text="Next → Function Mapping", bootstyle=INFO,
-                   command=self.proceed_to_page3).grid(row=6, column=0, columnspan=4, pady=10)
-
-    # ---------------- PAGE 3 -----------------
-    def build_page3(self):
-        self.mapping_frame = ttk.Labelframe(self.page3, text="3️⃣ Function Mapping", padding=20)
-        self.mapping_frame.pack(fill=BOTH, expand=True, padx=20, pady=20)
-
-        headers = ["Column", "Functionality", " ", "Level 1", "Level 2", "Level 3", "Level 4"]
-        for i, h in enumerate(headers):
-            ttk.Label(self.mapping_frame, text=h).grid(row=0, column=i, padx=10, pady=5)
-
-        self.rows = []
-        for r in range(4):
-            col_entry = ttk.Entry(self.mapping_frame, width=15)
-            col_entry.insert(0, f"Header {r + 1}")
-            col_entry.grid(row=r + 1, column=0, padx=5, pady=5)
-
-            func_var = StringVar()
-            func_combo = ttk.Combobox(self.mapping_frame, textvariable=func_var,
-                                      values=list(dict_func.keys()), width=15, state="readonly")
-            func_combo.grid(row=r + 1, column=1, padx=5, pady=5)
-
-            info_btn = ttk.Button(self.mapping_frame, text="ℹ️", width=3, bootstyle=INFO,
-                                  command=lambda fvar=func_var: self.show_function_info(fvar))
-            info_btn.grid(row=r + 1, column=2, padx=5, pady=5)
-
-            # level dropdowns (hidden initially)
-            level_vars, level_combos = [], []
-            for j in range(4):
-                lvl_var = StringVar()
-                lvl_combo = ttk.Combobox(self.mapping_frame, textvariable=lvl_var, width=15, state="disabled")
-                lvl_combo.grid(row=r + 1, column=j + 3, padx=5, pady=5)
-                lvl_combo.grid_remove()
-                level_vars.append(lvl_var)
-                level_combos.append(lvl_combo)
-
-            func_combo.bind("<<ComboboxSelected>>",
-                            lambda e, lvls=level_combos, fvar=func_var: self.populate_levels(lvls, fvar))
-            self.rows.append((col_entry, func_var, func_combo, level_vars, level_combos))
-
-        self.submit_btn = ttk.Button(self.mapping_frame, text="Submit", bootstyle=SUCCESS,
-                                     command=self.submit_mapping, state="disabled")
-        self.submit_btn.grid(row=6, column=0, columnspan=7, pady=20)
-
-    # ---------------- LOGIC -----------------
-    def select_data_file(self):
-        path = filedialog.askopenfilename(title="Select Data File",
-                                          filetypes=[("All Supported", "*.csv *.xlsx *.xls *.xlsb")])
-        if path:
-            self.data_file = path
-            self.data_label.config(text=path)
-
-    def select_req_file(self):
-        path = filedialog.askopenfilename(title="Select Requirement File", filetypes=[("Excel files", "*.xlsx")])
-        if path:
-            self.req_file = path
-            self.req_label.config(text=path)
-
-    def load_data(self):
-        if not self.data_file or not self.req_file:
-            messagebox.showerror("Missing File", "Please select both files.")
-            return
+    for file in files:
         try:
-            ext = self.data_file.split(".")[-1].lower()
-            if ext == "csv":
-                self.df = pd.read_csv(self.data_file)
-            elif ext in ["xlsx", "xls"]:
-                self.df = pd.read_excel(self.data_file)
-            elif ext == "xlsb":
-                self.df = pd.read_excel(self.data_file, engine="pyxlsb")
-            else:
-                raise ValueError("Unsupported format")
+            wb = load_workbook(file)
+        except InvalidFileException:
+            messagebox.showwarning("Warning", f"Skipping invalid Excel file: {file}")
+            continue
 
-            self.req_df = pd.read_excel(self.req_file)
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-            return
+        # Assign color (cycle if more files)
+        color = TAB_COLORS[color_index % len(TAB_COLORS)]
+        color_index += 1
 
-        string_cols = self.df.select_dtypes(include="object").columns.tolist()
-        self.col_combo.config(values=string_cols)
-        self.notebook.tab(1, state="normal")
-        messagebox.showinfo("Success", "Files loaded successfully!")
-
-    def load_unique_values(self):
-        col = self.col_var.get()
-        if not col:
-            messagebox.showerror("Error", "Select a column.")
-            return
-        self.listbox.delete(0, END)
-        vals = self.df[col].dropna().unique().tolist()
-        for v in vals:
-            self.listbox.insert(END, v)
-        self.group_mapping.clear()
-
-    def load_selected_group(self):
-        sel = [self.listbox.get(i) for i in self.listbox.curselection()]
-        group = self.group_entry.get().strip()
-        if not sel or not group:
-            messagebox.showerror("Error", "Select values and enter a group name.")
-            return
-
-        # store mappings
-        for v in sel:
-            self.group_mapping[v] = group
-
-        # remove selected from listbox
-        for i in reversed(self.listbox.curselection()):
-            self.listbox.delete(i)
-
-        # refresh input boxes
-        self.group_entry.delete(0, END)
-        self.listbox.selection_clear(0, END)
-
-    def replicate_remaining(self):
-        for v in self.listbox.get(0, END):
-            self.group_mapping[v] = v
-        self.listbox.delete(0, END)
-
-    def create_new_column(self):
-        if not self.group_mapping:
-            messagebox.showerror("Error", "Define at least one group.")
-            return
-        col = self.col_var.get()
-        new_col = self.new_name.get().strip() or f"{col}_group"
-        self.df[new_col] = self.df[col].map(self.group_mapping).fillna(self.df[col])
-        messagebox.showinfo("Success", f"New column '{new_col}' created!")
-
-    def proceed_to_page3(self):
-        if self.df is None:
-            messagebox.showerror("Error", "Load data first.")
-            return
-        self.notebook.tab(2, state="normal")
-        self.notebook.select(2)
-
-    # -------- PAGE 3 LOGIC --------
-    def populate_levels(self, level_combos, func_var):
-        for combo in level_combos:
-            combo.grid_remove()
-            combo.set("")
-
-        func = func_var.get()
-        if not func:
-            self.validate_submit_button()
-            return
-
-        n_levels = dict_func.get(func, 0)
-        available_cols = self.df.select_dtypes(include="object").columns.tolist()
-
-        for i in range(n_levels):
-            combo = level_combos[i]
-            combo.grid()
-            combo.config(values=available_cols, state="readonly")
-            combo.set(f"Level {i + 1}")
-            combo.bind("<<ComboboxSelected>>",
-                       lambda e, idx=i, lvls=level_combos: self.update_next_levels(idx, lvls, available_cols))
-
-        self.validate_submit_button()
-
-    def update_next_levels(self, idx, level_combos, available_cols):
-        selected_vals = [combo.get() for combo in level_combos if combo.winfo_ismapped() and combo.get()]
-        for i in range(idx + 1, len(level_combos)):
-            if level_combos[i].winfo_ismapped():
-                remaining = [c for c in available_cols if c not in selected_vals]
-                level_combos[i].config(values=remaining)
-        self.validate_submit_button()
-
-    def validate_submit_button(self):
-        enable = False
-        for row in self.rows:
-            func = row[1].get()
-            if func:
-                n_levels = dict_func.get(func, 0)
-                visible_levels = [c for c in row[4][:n_levels] if c.winfo_ismapped()]
-                if all(c.get() for c in visible_levels):
-                    enable = True
-                else:
-                    enable = False
-                    break
-        self.submit_btn.config(state="normal" if enable else "disabled")
-
-    def submit_mapping(self):
-        data = []
-        for row in self.rows:
-            col_name = row[0].get()
-            func = row[1].get()
-            if not func:
+        for sheet_name in wb.sheetnames:
+            # Skip "Sample" sheets
+            if sheet_name in SKIP_SHEETS:
                 continue
-            n_levels = dict_func.get(func, 0)
-            levels = [row[3][i].get() for i in range(n_levels)]
-            if all(levels):
-                d = {"Column": col_name, "Functionality": func}
-                for i, lvl in enumerate(levels):
-                    d[f"Level{i + 1}"] = lvl
-                data.append(d)
 
-        if not data:
-            messagebox.showerror("Error", "No valid selections made.")
-            return
+            # Skip single-instance sheets already added
+            if sheet_name in SINGLE_INSTANCE_SHEETS and sheet_name in used_single_instance:
+                continue
 
-        self.mappings_df = pd.DataFrame(data)
-        self.destroy()
+            sheet = wb[sheet_name]
 
-    def show_function_info(self, func_var):
-        func_name = func_var.get()
-        if not func_name:
-            messagebox.showinfo("Function Info", "Please select a functionality first.")
-            return
-        desc = dict_func_info.get(func_name, "No description available.")
-        messagebox.showinfo(f"Details – {func_name}", desc)
+            # Mark tab color
+            sheet.sheet_properties.tabColor = color
 
+            # Copy sheet to combined workbook
+            combined_wb._add_sheet(sheet.copy_worksheet())
 
-def launch_gui():
-    app = App()
-    app.mainloop()
-    return getattr(app, "df", None), getattr(app, "mappings_df", None)
+            # Track if single-instance sheet added
+            if sheet_name in SINGLE_INSTANCE_SHEETS:
+                used_single_instance.add(sheet_name)
 
+    # Remove placeholder sheet
+    if "Temp" in combined_wb.sheetnames:
+        del combined_wb["Temp"]
 
-# Example usage
+    # Save combined file
+    output_path = filedialog.asksaveasfilename(
+        title="Save Combined Excel As",
+        defaultextension=".xlsx",
+        filetypes=[("Excel Workbook", "*.xlsx")]
+    )
+
+    if output_path:
+        combined_wb.save(output_path)
+        messagebox.showinfo("Success", f"Combined Excel saved successfully:\n{output_path}")
+    else:
+        messagebox.showinfo("Cancelled", "Operation cancelled.")
+
+def main():
+    root = tk.Tk()
+    root.withdraw()  # Hide main window
+
+    messagebox.showinfo("Excel Combiner", "Select the Excel files you want to combine.")
+    files = select_files()
+
+    if files:
+        combine_excels_with_colors(files)
+
 if __name__ == "__main__":
-    df, mapping_df = launch_gui()
+    main()
