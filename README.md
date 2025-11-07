@@ -20,15 +20,18 @@ def select_files_dialog():
     return list(files)
 
 def copy_sheet_contents(src_ws, tgt_ws):
-    """Copy all contents and formatting from one sheet to another"""
+    """Copy all contents and formatting from one sheet to another."""
+    # Copy column widths
     for col_letter, dim in src_ws.column_dimensions.items():
         if dim.width is not None:
             tgt_ws.column_dimensions[col_letter].width = dim.width
 
+    # Copy row heights
     for row_idx, row_dim in src_ws.row_dimensions.items():
         if row_dim.height is not None:
             tgt_ws.row_dimensions[row_idx].height = row_dim.height
 
+    # Copy sheet formatting (margins, setup, panes)
     try:
         tgt_ws.page_setup = copy(src_ws.page_setup)
         tgt_ws.print_options = copy(src_ws.print_options)
@@ -39,7 +42,7 @@ def copy_sheet_contents(src_ws, tgt_ws):
     if src_ws.freeze_panes:
         tgt_ws.freeze_panes = src_ws.freeze_panes
 
-    # Copy cells
+    # Copy cells and styles
     for row_idx, row in enumerate(src_ws.iter_rows(), start=1):
         for col_idx, cell in enumerate(row, start=1):
             new_cell = tgt_ws.cell(row=row_idx, column=col_idx, value=cell.value)
@@ -52,13 +55,21 @@ def copy_sheet_contents(src_ws, tgt_ws):
                     new_cell.number_format = cell.number_format
             except Exception:
                 pass
+
             if cell.comment:
-                new_cell.comment = Comment(cell.comment.text, cell.comment.author)
+                try:
+                    new_cell.comment = Comment(cell.comment.text, cell.comment.author)
+                except Exception:
+                    pass
+
             if cell.hyperlink:
                 try:
                     new_cell._hyperlink = copy(cell.hyperlink)
                 except Exception:
-                    new_cell.hyperlink = cell.hyperlink.target if hasattr(cell.hyperlink, "target") else cell.hyperlink
+                    try:
+                        new_cell.hyperlink = cell.hyperlink.target
+                    except Exception:
+                        pass
 
     # Copy merged cells
     for merged_range in src_ws.merged_cells.ranges:
@@ -67,13 +78,16 @@ def copy_sheet_contents(src_ws, tgt_ws):
         except Exception:
             pass
 
-def copy_data_with_formatting(src_ws, tgt_ws, start_row, tgt_start_row):
-    """Copy all data and formatting from start_row to end"""
+def copy_data_with_formatting(src_ws, tgt_ws, src_start_row, tgt_start_row):
+    """
+    Copy all data (with formatting) from src_start_row to end of src_ws into tgt_ws starting at tgt_start_row.
+    Returns the next available target row.
+    """
     max_row = src_ws.max_row
     max_col = src_ws.max_column
     tgt_row = tgt_start_row
 
-    for row_idx in range(start_row, max_row + 1):
+    for row_idx in range(src_start_row, max_row + 1):
         for col_idx in range(1, max_col + 1):
             src_cell = src_ws.cell(row=row_idx, column=col_idx)
             tgt_cell = tgt_ws.cell(row=tgt_row, column=col_idx, value=src_cell.value)
@@ -87,9 +101,11 @@ def copy_data_with_formatting(src_ws, tgt_ws, start_row, tgt_start_row):
             except Exception:
                 pass
         tgt_row += 1
+
     return tgt_row
 
 def combine_excels(files, output_path=None):
+    """Combine multiple Excel files and add a 'Consolidated' sheet."""
     if not files:
         raise ValueError("No files provided")
 
@@ -99,8 +115,9 @@ def combine_excels(files, output_path=None):
 
     used_single_instance = set()
     color_index = 0
-    consolidated_data = []  # store tuples (sheet, row)
+    sheets_for_consolidation = []
 
+    # Step 1: Combine all files, color tabs, skip certain sheets
     for file_path in files:
         if not os.path.isfile(file_path):
             continue
@@ -131,20 +148,23 @@ def combine_excels(files, output_path=None):
             copy_sheet_contents(src_ws, tgt_ws)
             tgt_ws.sheet_properties.tabColor = tab_color
 
+            # Track single-instance and consolidation sheets
             if sheet_name in SINGLE_INSTANCE_SHEETS:
                 used_single_instance.add(sheet_name)
             else:
-                consolidated_data.append(tgt_ws)
+                sheets_for_consolidation.append(tgt_ws)
 
-    # Create Consolidated sheet
+    # Step 2: Create Consolidated sheet
     cons_ws = combined_wb.create_sheet(title="Consolidated")
     cons_ws.sheet_properties.tabColor = "ADD8E6"  # light blue
     tgt_row = 1
 
-    for ws in consolidated_data:
-        # Copy data from row 10 onwards
-        tgt_row = copy_data_with_formatting(ws, cons_ws, start_row=10, tgt_start_row=tgt_row + (1 if tgt_row > 1 else 0))
+    for ws in sheets_for_consolidation:
+        # Add data from row 10 onward
+        tgt_row = copy_data_with_formatting(ws, cons_ws, src_start_row=10, tgt_start_row=tgt_row)
+        tgt_row += 1  # blank line between sheets
 
+    # Step 3: Save final file
     if not output_path:
         output_path = filedialog.asksaveasfilename(
             title="Save Combined Excel As",
@@ -160,7 +180,7 @@ def combine_excels(files, output_path=None):
 def run_gui():
     root = tk.Tk()
     root.withdraw()
-    messagebox.showinfo("Select files", "Select the Excel files you want to combine (ctrl/cmd+click to multi-select).")
+    messagebox.showinfo("Excel Combiner", "Select the Excel files you want to combine (Ctrl/Cmd+Click for multiple).")
     files = select_files_dialog()
     if not files:
         messagebox.showinfo("Cancelled", "No files selected. Exiting.")
