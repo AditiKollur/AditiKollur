@@ -10,7 +10,6 @@ import pandas as pd
 TAB_COLORS = ["FFC0CB", "90EE90", "87CEEB", "FFFF99", "C0C0C0", "FFD580"]  # pink, green, blue, yellow, grey, orange
 SINGLE_INSTANCE_SHEETS = {"ReadMe", "Taxonomy Dropdowns"}
 SKIP_SHEETS = {"Sample"}
-START_ROW = 10  # consolidation starts from this row (10th row as header)
 
 # ------------------ FILE SELECTION ------------------
 def select_files():
@@ -31,8 +30,6 @@ def copy_sheet(source_ws, target_ws):
                 new_cell.number_format = cell.number_format
                 new_cell.protection = copy(cell.protection)
                 new_cell.alignment = copy(cell.alignment)
-
-    # copy merged cells
     for merged_range in source_ws.merged_cells.ranges:
         target_ws.merge_cells(str(merged_range))
 
@@ -42,7 +39,7 @@ def combine_excels(files, output_path=None):
         raise ValueError("No files selected")
 
     combined_wb = Workbook()
-    combined_wb.remove(combined_wb.active)  # remove default empty sheet
+    combined_wb.remove(combined_wb.active)
 
     color_index = 0
     added_single_instance = set()
@@ -74,27 +71,40 @@ def combine_excels(files, output_path=None):
             tgt_ws.sheet_properties.tabColor = color
             copy_sheet(src_ws, tgt_ws)
 
-            # --- For consolidation ---
+            # --- Consolidation logic ---
             if sheet_name not in SINGLE_INSTANCE_SHEETS:
                 try:
-                    # Read sheet starting row 10 as header
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, header=START_ROW - 1)
+                    # Find the row index where the first column = "Band"
+                    band_row = None
+                    for row in src_ws.iter_rows(min_row=1, max_col=1):
+                        cell_value = row[0].value
+                        if isinstance(cell_value, str) and cell_value.strip().lower() == "band":
+                            band_row = row[0].row
+                            break
 
-                    # Skip if empty or less than 3 columns
-                    if df.shape[1] < 3:
+                    if band_row is None:
+                        print(f"'Band' not found in {sheet_name} ({os.path.basename(file_path)})")
                         continue
 
-                    # Drop last column (skip reading last column)
-                    df = df.iloc[:, :-1]
+                    # Read the sheet starting from the row where 'Band' is header
+                    df = pd.read_excel(file_path, sheet_name=sheet_name, header=band_row - 1)
+
+                    # Drop last column if exists
+                    if df.shape[1] > 1:
+                        df = df.iloc[:, :-1]
 
                     # Keep only rows where first 3 columns have values
                     df = df.dropna(subset=df.columns[:3], how="any")
 
-                    # Add metadata columns
+                    if df.empty:
+                        continue
+
+                    # Add metadata
                     df["Source_File"] = os.path.basename(file_path)
                     df["Source_Sheet"] = sheet_name
 
                     consolidated_dfs.append(df)
+
                 except Exception as e:
                     print(f"Skipping {sheet_name} in {os.path.basename(file_path)} due to error: {e}")
                     continue
@@ -103,8 +113,7 @@ def combine_excels(files, output_path=None):
     if consolidated_dfs:
         final_df = pd.concat(consolidated_dfs, ignore_index=True)
 
-        # Create consolidated sheet as first sheet
-        cons_ws = combined_wb.create_sheet("Consolidated", 0)
+        cons_ws = combined_wb.create_sheet("Consolidated", 0)  # make first sheet
 
         # Write header
         for c_idx, col_name in enumerate(final_df.columns, start=1):
