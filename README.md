@@ -1,171 +1,208 @@
 ```
 import pandas as pd
 import numpy as np
+from typing import Tuple
 
-def gen_region_comm_hierarchical_conditional_offset(df_cy, df_py, metric_col, Level1, Level2, Level3,
-                                                    top_n_level2=1, top_n_level3=3):
+def _compute_aggregates(df_cy: pd.DataFrame, df_py: pd.DataFrame, group_cols, metric_col: str) -> pd.DataFrame:
     """
-    Hierarchical commentary:
-      - For each Level1: explain by top Level2 (lead) and an offset Level2.
-      - If the offset Level2 is negative (i.e. the worst Level2 Change < 0),
-        use the bottom `top_n_level2` (most negative) to explain the offset.
-      - For each Level2 mentioned: explain by its top Level3 products.
+    Helper: aggregate CY and PY by group_cols and compute Change and YoY%.
+    """
+    cy = df_cy.groupby(group_cols)[[metric_col]].sum().reset_index().rename(columns={metric_col: f"{metric_col}_cy"})
+    py = df_py.groupby(group_cols)[[metric_col]].sum().reset_index().rename(columns={metric_col: f"{metric_col}_py"})
+    merged = cy.merge(py, how="left", on=group_cols).fillna(0)
+    merged["Change"] = merged[f"{metric_col}_cy"] - merged[f"{metric_col}_py"]
+    # safe YoY%
+    merged["YoY%"] = np.where(merged[f"{metric_col}_py"] != 0,
+                               merged["Change"] / merged[f"{metric_col}_py"] * 100,
+                               np.nan)
+    return merged
+
+def _fmt_money(x: float) -> str:
+    """Format money with commas and no decimals if integer-ish, else one decimal. Keep sign."""
+    if pd.isna(x):
+        return "N/A"
+    # include sign
+    sign = "+" if x > 0 else "-" if x < 0 else ""
+    val = abs(x)
+    if float(val).is_integer():
+        s = f"{int(val):,}"
+    else:
+        s = f"{val:,.1f}"
+    return f"{sign}{s}"
+
+def _fmt_change_yoy(change: float, yoy: float) -> str:
+    """Return string like +1,234 / 12.3% (handle NaN YoY)"""
+    ch = _fmt_money(change)
+    if pd.isna(yoy):
+        return f"{ch} / N/A"
+    return f"{ch} / {yoy:.1f}%"
+
+# ----------------------------
+# Function 1: summary line
+# ----------------------------
+def summary_line(df_cy: pd.DataFrame, df_py: pd.DataFrame,
+                 region_col: str, region_value: str,
+                 metric_col: str) -> Tuple[str, float]:
+    """
+    Build the first summary line for a specific region.
 
     Returns:
-      para1, final_comm (strings)
+      - summary string
+      - region_change_sign (positive if growth, negative if contraction, 0 if flat)
+    Example:
+      "Managed Total Relationship income of Europe of 1,234, +123 / 11.1%"
     """
-    # defensive copies
-    cy = df_cy.copy()
-    py = df_py.copy()
+    # filter region
+    cy_r = df_cy[df_cy[region_col] == region_value]
+    py_r = df_py[df_py[region_col] == region_value]
 
-    # ---------- Aggregate Level1 ----------
-    cy_l1 = cy.groupby([Level1])[[metric_col]].sum().reset_index()
-    py_l1 = py.groupby([Level1])[[metric_col]].sum().reset_index()
-    merged = cy_l1.merge(py_l1, how='left', on=Level1, suffixes=('_cy', '_py')).fillna(0)
-    merged['Change'] = merged[f'{metric_col}_cy'] - merged[f'{metric_col}_py']
-    merged['YoY%'] = np.where(merged[f'{metric_col}_py'] != 0,
-                              (merged['Change'] / merged[f'{metric_col}_py']) * 100,
-                              np.nan)
-    merged.sort_values(by='Change', ascending=False, inplace=True)
+    # aggregate totals
+    total_cy = cy_r[metric_col].sum()
+    total_py = py_r[metric_col].sum()
 
-    # ---------- Aggregate Level1+Level2 ----------
-    cy_l2 = cy.groupby([Level1, Level2])[[metric_col]].sum().reset_index()
-    py_l2 = py.groupby([Level1, Level2])[[metric_col]].sum().reset_index()
-    merged_l2 = cy_l2.merge(py_l2, how='left', on=[Level1, Level2], suffixes=('_cy', '_py')).fillna(0)
-    merged_l2['Change'] = merged_l2[f'{metric_col}_cy'] - merged_l2[f'{metric_col}_py']
-    merged_l2['YoY%'] = np.where(merged_l2[f'{metric_col}_py'] != 0,
-                                 (merged_l2['Change'] / merged_l2[f'{metric_col}_py']) * 100,
-                                 np.nan)
-    # sort Level2 within Level1 by Change desc
-    merged_l2.sort_values(by=[Level1, 'Change'], ascending=[True, False], inplace=True)
+    change = total_cy - total_py
+    yoy = (change / total_py * 100) if total_py != 0 else np.nan
 
-    # ---------- Aggregate Level1+Level2+Level3 ----------
-    cy_l3 = cy.groupby([Level1, Level2, Level3])[[metric_col]].sum().reset_index()
-    py_l3 = py.groupby([Level1, Level2, Level3])[[metric_col]].sum().reset_index()
-    merged_l3 = cy_l3.merge(py_l3, how='left', on=[Level1, Level2, Level3], suffixes=('_cy', '_py')).fillna(0)
-    merged_l3['Change'] = merged_l3[f'{metric_col}_cy'] - merged_l3[f'{metric_col}_py']
-    merged_l3['YoY%'] = np.where(merged_l3[f'{metric_col}_py'] != 0,
-                                 (merged_l3['Change'] / merged_l3[f'{metric_col}_py']) * 100,
-                                 np.nan)
-    merged_l3.sort_values(by=[Level1, Level2, 'Change'], ascending=[True, True, False], inplace=True)
+    # format numbers
+    total_str = f"{total_cy:,.0f}" if float(total_cy).is_integer() else f"{total_cy:,.1f}"
+    change_yoy_str = _fmt_change_yoy(change, yoy)
 
-    # ---------- Compose commentary ----------
-    positive_segments = merged[merged['Change'] > 0][Level1].tolist()
-    sectors = ", ".join(map(str, positive_segments)) if positive_segments else "N/A"
-    para1 = f"TRI growth across {sectors}."
+    sign = 1 if change > 0 else (-1 if change < 0 else 0)
+    summary = (f"Managed Total Relationship income of {region_value} of {total_str}, "
+               f"{change_yoy_str}")
+    return summary, sign
 
-    lines = [para1]
+# ----------------------------
+# Function 2: drilldown (Segments/Markets)
+# ----------------------------
+def drilldown_top_or_bottom(df_cy: pd.DataFrame, df_py: pd.DataFrame,
+                            region_col: str, region_value: str,
+                            group_col: str, metric_col: str,
+                            overall_sign: int, n: int = 2,
+                            label_name: str = None) -> str:
+    """
+    Build a line that lists top n (if overall_sign>0) OR bottom n (if overall_sign<0)
+    grouped by group_col within the specified region. Returns a formatted line.
 
-    # Helper to format Level3 items (used inside build_l2_with_l3)
-    def format_l3_rows(l3_df):
-        items = []
-        for _, row in l3_df.iterrows():
-            l3name = row[Level3]
-            ch = row['Change']
-            yoy = row['YoY%']
-            yoy_str = f", {yoy:.1f}%" if not pd.isna(yoy) else ""
-            items.append(f"{l3name} (+{ch:.1f}{yoy_str})")
-        return ", ".join(items)
+    Example output for group_col='CIB Segment' and label_name='Segments':
+      "Segments - In the Europe region, growth was led by Corporate (+123 / 12.3%) and SMB (+45 / 5.6%)"
 
-    # For each Level1 (ordered by Change), produce a hierarchical sentence
-    for _, row_l1 in merged.iterrows():
-        seg = row_l1[Level1]
-        seg_change = row_l1['Change']
-        seg_yoy = row_l1['YoY%']
+    Parameters:
+      - overall_sign: 1 (growth) / -1 (contraction) / 0 (flat) — decides top or bottom selection
+      - n: how many items to pick
+      - label_name: human label like "Segments" or "Markets" (if None, uses group_col)
+    """
+    label = label_name or group_col
+    # restrict to region
+    cy_r = df_cy[df_cy[region_col] == region_value]
+    py_r = df_py[df_py[region_col] == region_value]
 
-        sign_word = "up" if seg_change > 0 else "down" if seg_change < 0 else "flat"
-        l1_phrase = f"{seg} TRI {sign_word} by {seg_change:.1f}"
-        if not pd.isna(seg_yoy):
-            l1_phrase += f" ({seg_yoy:.1f}% YoY)"
-        l1_phrase += "."
+    # aggregate by group_col
+    agg = _compute_aggregates(cy_r, py_r, [group_col], metric_col)
+    if agg.empty:
+        return f"{label} - No data for {region_value}."
 
-        # Level2 subset for this Level1
-        l2_subset = merged_l2[merged_l2[Level1] == seg]
-        if l2_subset.empty:
-            lines.append(l1_phrase)
-            continue
+    # Choose top or bottom n
+    if overall_sign > 0:
+        # growth -> top n by Change
+        sel = agg.sort_values("Change", ascending=False).head(n)
+        verb = "growth was led by"
+    elif overall_sign < 0:
+        # contraction -> bottom n by Change (most negative)
+        sel = agg.sort_values("Change", ascending=True).head(n)
+        verb = "contraction was led by"
+    else:
+        # flat -> pick top n (neutral wording)
+        sel = agg.sort_values("Change", ascending=False).head(n)
+        verb = "movement was led by"
 
-        # Lead Level2: top N by Change (desc)
-        lead_l2 = l2_subset.sort_values('Change', ascending=False).head(top_n_level2)
+    # format each selected row
+    parts = []
+    for _, r in sel.iterrows():
+        name = str(r[group_col])
+        change = r["Change"]
+        yoy = r["YoY%"]
+        parts.append(f"{name} ({_fmt_change_yoy(change, yoy)})")
 
-        # Offset Level2 selection (conditional):
-        # - If the worst Level2 (most negative) for this Level1 is negative, pick bottom N (most negative).
-        # - Otherwise, pick top N (largest positive) as the offset (fallback).
-        bottom_candidate = l2_subset.sort_values('Change', ascending=True).head(top_n_level2)
-        use_bottom_for_offset = False
-        if not bottom_candidate.empty:
-            # check the worst change value
-            worst_change = bottom_candidate['Change'].iloc[0]
-            if worst_change < 0:
-                use_bottom_for_offset = True
+    # join with ' and '
+    if len(parts) == 1:
+        joined = parts[0]
+    elif len(parts) == 2:
+        joined = " and ".join(parts)
+    else:
+        joined = ", ".join(parts[:-1]) + ", and " + parts[-1]
 
-        if use_bottom_for_offset:
-            offset_l2 = l2_subset.sort_values('Change', ascending=True).head(top_n_level2)
-        else:
-            # fallback: use top_n_level2 by Change descending (so 'offset' will be the lesser positives)
-            offset_l2 = l2_subset.sort_values('Change', ascending=False).tail(top_n_level2)
+    # final sentence
+    sentence = f"{label} - In the {region_value} region, {verb} {joined}"
+    return sentence
 
-        # Build descriptive phrase for Level2 including their Level3 drivers
-        def build_l2_with_l3(df_l2_rows, descriptor):
-            parts = []
-            for _, r in df_l2_rows.iterrows():
-                l2name = r[Level2]
-                l2chg = r['Change']
-                l2y = r['YoY%']
-                l2_yoy_str = f" ({l2y:.1f}% YoY)" if not pd.isna(l2y) else ""
-                # get top Level3 under (seg, l2name)
-                l3_subset = merged_l3[
-                    (merged_l3[Level1] == seg) &
-                    (merged_l3[Level2] == l2name)
-                ].sort_values('Change', ascending=False).head(top_n_level3)
+# ----------------------------
+# Wrapper: produce full commentary (2 lines)
+# ----------------------------
+def region_commentary(df_cy: pd.DataFrame, df_py: pd.DataFrame,
+                      region_col: str, region_value: str,
+                      metric_col: str,
+                      segment_col: str = "CIB Segment",
+                      market_col: str = "Managed country",
+                      top_n: int = 2) -> str:
+    """
+    Produces the full commentary with:
+      1) summary_line(...)
+      2) segments line (using drilldown_top_or_bottom)
+      3) markets line (using drilldown_top_or_bottom)
 
-                if not l3_subset.empty:
-                    l3_str = format_l3_rows(l3_subset)
-                    parts.append(f"{l2name} (+{l2chg:.1f}{l2_yoy_str}) driven by {l3_str}")
-                else:
-                    parts.append(f"{l2name} (+{l2chg:.1f}{l2_yoy_str})")
-            return f"{descriptor} " + " & ".join(parts) + "."
+    Returns the complete commentary string (multi-line).
+    """
+    # first line
+    summary, sign = summary_line(df_cy, df_py, region_col, region_value, metric_col)
 
-        lead_phrase = build_l2_with_l3(lead_l2, "growth was led by")
-        offset_phrase = build_l2_with_l3(offset_l2, "but was partially offset by")
+    # second lines
+    segments_line = drilldown_top_or_bottom(df_cy, df_py, region_col, region_value,
+                                            segment_col, metric_col, overall_sign=sign,
+                                            n=top_n, label_name="Segments")
+    markets_line = drilldown_top_or_bottom(df_cy, df_py, region_col, region_value,
+                                           market_col, metric_col, overall_sign=sign,
+                                           n=top_n, label_name="Markets")
 
-        combined = f"{l1_phrase} {lead_phrase} {offset_phrase}"
-        lines.append(combined)
+    # combine
+    return "\n".join([summary, segments_line, markets_line])
 
-    final_comm = "\n".join(lines)
-    return para1, final_comm
-
-
-# -------------------------
-# Quick demo / test block
-# -------------------------
+# ----------------------------
+# Example usage / demo
+# ----------------------------
 if __name__ == "__main__":
-    # sample data
+    # sample data using the columns you mentioned
     data_cy = [
-        {"Region":"Corporate", "Sector":"Manufacturing", "Product":"Overdraft", "TRI":50},
-        {"Region":"Corporate", "Sector":"Manufacturing", "Product":"FX", "TRI":30},
-        {"Region":"Corporate", "Sector":"Energy",        "Product":"Trade Finance", "TRI":10},
-        {"Region":"Business Banking", "Sector":"Healthcare","Product":"Term Loan", "TRI":20},
-        {"Region":"Business Banking", "Sector":"Trading","Product":"CMS", "TRI":5},
+        {"Managed Region":"Europe", "CIB Segment":"Corporate", "Managed country":"France",
+         "Business Line":"Loans", "MJ":1, "CBR":2, "TRI":500},
+        {"Managed Region":"Europe", "CIB Segment":"Corporate", "Managed country":"Germany",
+         "Business Line":"FX", "MJ":1, "CBR":2, "TRI":300},
+        {"Managed Region":"Europe", "CIB Segment":"SME", "Managed country":"Italy",
+         "Business Line":"Deposits", "MJ":1, "CBR":2, "TRI":200},
+        {"Managed Region":"Europe", "CIB Segment":"SME", "Managed country":"Spain",
+         "Business Line":"Cash", "MJ":1, "CBR":2, "TRI":150},
     ]
     data_py = [
-        {"Region":"Corporate", "Sector":"Manufacturing", "Product":"Overdraft", "TRI":35},
-        {"Region":"Corporate", "Sector":"Manufacturing", "Product":"FX", "TRI":22},
-        {"Region":"Corporate", "Sector":"Energy",        "Product":"Trade Finance", "TRI":22},
-        {"Region":"Business Banking", "Sector":"Healthcare","Product":"Term Loan", "TRI":10},
-        {"Region":"Business Banking", "Sector":"Trading","Product":"CMS", "TRI":15},
+        {"Managed Region":"Europe", "CIB Segment":"Corporate", "Managed country":"France",
+         "Business Line":"Loans", "MJ":1, "CBR":2, "TRI":430},
+        {"Managed Region":"Europe", "CIB Segment":"Corporate", "Managed country":"Germany",
+         "Business Line":"FX", "MJ":1, "CBR":2, "TRI":280},
+        {"Managed Region":"Europe", "CIB Segment":"SME", "Managed country":"Italy",
+         "Business Line":"Deposits", "MJ":1, "CBR":2, "TRI":210},
+        {"Managed Region":"Europe", "CIB Segment":"SME", "Managed country":"Spain",
+         "Business Line":"Cash", "MJ":1, "CBR":2, "TRI":160},
     ]
+
     df_cy = pd.DataFrame(data_cy).rename(columns={"TRI":"Total Relationship Income ($M)"})
     df_py = pd.DataFrame(data_py).rename(columns={"TRI":"Total Relationship Income ($M)"})
 
-    para1, commentary = gen_region_comm_hierarchical_conditional_offset(
+    commentary = region_commentary(
         df_cy, df_py,
+        region_col="Managed Region", region_value="Europe",
         metric_col="Total Relationship Income ($M)",
-        Level1="Region", Level2="Sector", Level3="Product",
-        top_n_level2=2, top_n_level3=3
+        segment_col="CIB Segment",
+        market_col="Managed country",
+        top_n=2
     )
 
-    print("PARA1:")
-    print(para1)
-    print("\nFINAL COMMENTARY:")
     print(commentary)
