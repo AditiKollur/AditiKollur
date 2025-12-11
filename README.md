@@ -119,13 +119,18 @@ def compare_mg_inscope_mastergroup_strict(
 
         # Now attach Mastergroup name into changes (prefer current mg_c value)
         # build helper df: key -> mastergroup (prefer mg_c)
-        mg_c_key_master = mg_c[[primary_key, mastergroup_col]].drop_duplicates().set_index(primary_key)
-        mg_p_key_master = mg_p[[primary_key, mastergroup_col]].drop_duplicates().set_index(primary_key)
+        # ensure single-valued by dropping duplicates; take first if multiple
+        mg_c_key_master = mg_c[[primary_key, mastergroup_col]].drop_duplicates(subset=[primary_key, mastergroup_col])
+        mg_p_key_master = mg_p[[primary_key, mastergroup_col]].drop_duplicates(subset=[primary_key, mastergroup_col])
+
+        mg_c_key_master = mg_c_key_master.set_index(primary_key)[mastergroup_col]
+        mg_p_key_master = mg_p_key_master.set_index(primary_key)[mastergroup_col]
+
         def get_master_for_key(k):
             if k in mg_c_key_master.index:
-                return mg_c_key_master.loc[k, mastergroup_col]
+                return mg_c_key_master.loc[k]
             elif k in mg_p_key_master.index:
-                return mg_p_key_master.loc[k, mastergroup_col]
+                return mg_p_key_master.loc[k]
             else:
                 return np.nan
         changes[mastergroup_col] = changes[primary_key].map(get_master_for_key)
@@ -159,7 +164,7 @@ def compare_mg_inscope_mastergroup_strict(
 
         df = df_rows.copy()
 
-        # Prepare cust subsets (only mastergroup_col + financial_col); if financial_col missing, empty df
+        # Prepare cust subsets (only mastergroup_col + financial_col)
         gbm_sub = cust_gbm_source[[mastergroup_col, financial_col]].drop_duplicates() if financial_col in cust_gbm_source.columns and mastergroup_col in cust_gbm_source.columns else pd.DataFrame(columns=[mastergroup_col, financial_col])
         cmb_sub = cust_cmb_source[[mastergroup_col, financial_col]].drop_duplicates() if financial_col in cust_cmb_source.columns and mastergroup_col in cust_cmb_source.columns else pd.DataFrame(columns=[mastergroup_col, financial_col])
 
@@ -172,9 +177,12 @@ def compare_mg_inscope_mastergroup_strict(
 
         na_mask = tmp[financial_col].isna()
         if na_mask.any() and not cmb_sub.empty:
-            missing = tmp.loc[na_mask, mastergroup_col].drop_duplicates()
-            if not missing.empty:
-                merged_cmb = missing.merge(cmb_sub, on=mastergroup_col, how='left')
+            # missing is a Series of mastergroup values — convert to DataFrame before merge
+            missing_series = tmp.loc[na_mask, mastergroup_col].drop_duplicates()
+            if not missing_series.empty:
+                missing_df = pd.DataFrame({mastergroup_col: missing_series.values})
+                merged_cmb = missing_df.merge(cmb_sub, on=mastergroup_col, how='left')
+                # join the found cmb values back to tmp via mastergroup_col
                 tmp = tmp.merge(merged_cmb, on=mastergroup_col, how='left', suffixes=('','_cmbtmp'))
                 if financial_col + '_cmbtmp' in tmp.columns:
                     tmp[financial_col] = tmp[financial_col].fillna(tmp[financial_col + '_cmbtmp'])
@@ -211,224 +219,3 @@ def compare_mg_inscope_mastergroup_strict(
         'changes': changes,
         'out_file': out_file
     }
-
-res = compare_mg_inscope_mastergroup_strict(
-    mg_p=mg_prior_df,
-    mg_c=mg_current_df,
-    cust_gbm_p=cust_gbm_prior_df,
-    cust_cmb_p=cust_cmb_prior_df,
-    cust_gbm_c=cust_gbm_current_df,
-    cust_cmb_c=cust_cmb_current_df,
-    inscope_col_mg=['Mastergroup ID', 'Mastergroup name', 'SomeOtherInScopeCol']  # example
-)
-print("Wrote:", res['out_file'])
-res['additions'].head()
-
-
-
-
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from io import BytesIO
-
-st.set_page_config(page_title="MG Exception Storytelling", layout="wide")
-
-# ---------------------------------------------------------
-# UTILITY FUNCTIONS
-# ---------------------------------------------------------
-
-def kpi_card(label, value, color="#2266cc"):
-    st.markdown(
-        f"""
-        <div style="padding:15px;border-radius:10px;background:{color}20;border-left:6px solid {color};margin-bottom:10px">
-            <h4 style="margin:0;color:{color}">{label}</h4>
-            <h2 style="margin:0;color:#000">{value}</h2>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-def download_excel(df, filename="data.xlsx"):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False)
-    return output.getvalue()
-
-def waterfall_chart(added, deleted, final):
-    fig = go.Figure(go.Waterfall(
-        name="Revenue Movement",
-        orientation="v",
-        measure=["relative", "relative", "total"],
-        x=["Additions", "Deletions", "Net Change"],
-        y=[added, -deleted, final],
-        connector={"line": {"color": "grey"}}
-    ))
-    fig.update_layout(title="Revenue Waterfall", height=350)
-    return fig
-
-# ---------------------------------------------------------
-# TITLE
-# ---------------------------------------------------------
-
-st.title("📊 MG Exceptions — Storytelling Dashboard")
-st.markdown("Upload your Additions, Deletions & Changes outputs to visualize the revenue story.")
-
-# ---------------------------------------------------------
-# FILE UPLOAD SECTION
-# ---------------------------------------------------------
-
-st.header("📁 Upload MG Exception Outputs")
-
-add_file = st.file_uploader("Upload Additions Excel", type=["xlsx"])
-del_file = st.file_uploader("Upload Deletions Excel", type=["xlsx"])
-chg_file = st.file_uploader("Upload Changes Excel", type=["xlsx"])
-
-if add_file and del_file:
-    additions = pd.read_excel(add_file)
-    deletions = pd.read_excel(del_file)
-    changes = pd.read_excel(chg_file) if chg_file else pd.DataFrame()
-
-    st.success("Files loaded successfully!")
-
-    # Mastergroup + Revenue should exist
-    master_col = "Mastergroup name"
-    fin_col = "Total Operating Income (HORIS YTD Financials)"
-
-    # ---------------------------------------------------------
-    # FEATURE SELECTION
-    # ---------------------------------------------------------
-    st.header("🎛 Select up to 2 features for storytelling")
-
-    feature_candidates = [c for c in additions.columns if c not in [master_col, fin_col] and additions[c].nunique() < 30]
-    selected_features = st.multiselect("Choose features", feature_candidates, max_selections=2)
-
-    if selected_features:
-        st.info(f"Storytelling based on: **{', '.join(selected_features)}**")
-
-        # ---------------------------------------------------------
-        # FILTERED DATA
-        # ---------------------------------------------------------
-        df_add = additions[[master_col, fin_col] + selected_features].copy()
-        df_del = deletions[[master_col, fin_col] + selected_features].copy()
-
-        revenue_added = df_add[fin_col].sum()
-        revenue_deleted = df_del[fin_col].sum()
-        net_change = revenue_added - revenue_deleted
-
-        # ---------------------------------------------------------
-        # KPI SECTION
-        # ---------------------------------------------------------
-        st.header("📌 Key Portfolio Metrics")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1: kpi_card("Total Additions", len(df_add))
-        with col2: kpi_card("Revenue Added", f"₹{revenue_added:,.2f}")
-        with col3: kpi_card("Total Deletions", len(df_del), color="#cc2222")
-        with col4: kpi_card("Revenue Lost", f"₹{revenue_deleted:,.2f}", color="#cc2222")
-
-        st.subheader("Net Impact")
-        kpi_card("Net Revenue Change", f"₹{net_change:,.2f}", "#0a8a0a")
-
-        # ---------------------------------------------------------
-        # STORY NARRATIVE SECTION
-        # ---------------------------------------------------------
-        st.header("📝 Executive Summary Story")
-
-        feature_text = " & ".join(selected_features) if len(selected_features) == 2 else selected_features[0]
-
-        story = f"""
-### **📌 Portfolio Revenue Story — Based on {feature_text}**
-
-**1. Additions increased revenue by ₹{revenue_added:,.2f}.**  
-These accounts entered the portfolio this month and strengthened the revenue base.  
-The largest positive contributors were from the **top-performing clusters** based on {feature_text}.
-
-**2. Deletions decreased revenue by ₹{revenue_deleted:,.2f}.**  
-These accounts exited or became inactive. Several deletions appear in segments  
-with lower engagement or migration to competitors.
-
-**3. Net Revenue Change is ₹{net_change:,.2f}.**  
-Overall, the portfolio shows a **{'positive' if net_change>0 else 'negative'} uplift**,  
-highlighting the importance of sustaining high-value additions and re-engaging  
-key accounts at risk.
-
-"""
-
-        st.markdown(story)
-
-        # ---------------------------------------------------------
-        # CHARTS SECTION
-        # ---------------------------------------------------------
-        st.header("📈 Visual Analysis")
-
-        colA, colB = st.columns(2)
-
-        with colA:
-            st.subheader("Additions — Revenue Contribution")
-            fig_add = px.bar(df_add.sort_values(fin_col, ascending=False).head(20),
-                             x=master_col, y=fin_col, title="Top Additions")
-            st.plotly_chart(fig_add, use_container_width=True)
-
-        with colB:
-            st.subheader("Deletions — Revenue Loss")
-            fig_del = px.bar(df_del.sort_values(fin_col, ascending=False).head(20),
-                             x=master_col, y=fin_col, title="Top Deletions")
-            st.plotly_chart(fig_del, use_container_width=True)
-
-        st.subheader("Revenue Waterfall")
-        fig_water = waterfall_chart(revenue_added, revenue_deleted, net_change)
-        st.plotly_chart(fig_water, use_container_width=True)
-
-        # ---------------------------------------------------------
-        # TABLE SECTION WITH TABS
-        # ---------------------------------------------------------
-        st.header("📋 Detailed Data")
-
-        tab1, tab2, tab3 = st.tabs(["Additions", "Deletions", "Changes"])
-
-        with tab1:
-            st.dataframe(df_add)
-            st.download_button("⬇ Download Additions", 
-                               data=download_excel(df_add),
-                               file_name="additions_filtered.xlsx")
-
-        with tab2:
-            st.dataframe(df_del)
-            st.download_button("⬇ Download Deletions", 
-                               data=download_excel(df_del),
-                               file_name="deletions_filtered.xlsx")
-
-        with tab3:
-            if not changes.empty:
-                st.dataframe(changes)
-                st.download_button("⬇ Download Changes", 
-                                   data=download_excel(changes),
-                                   file_name="changes.xlsx")
-            else:
-                st.info("No changes file uploaded.")
-
-        # ---------------------------------------------------------
-        # ACTION BUTTONS
-        # ---------------------------------------------------------
-        st.header("⚙ Actions")
-
-        colx1, colx2, colx3 = st.columns(3)
-
-        with colx1:
-            st.button("🔁 Refresh Story")
-
-        with colx2:
-            st.button("📤 Export Story as PDF (Coming Soon)")
-
-        with colx3:
-            st.button("📈 Compare with Last 6 Months (Future Feature)")
-
-else:
-    st.info("Upload at least Additions and Deletions to continue.")
-
-
-
-
-
-
