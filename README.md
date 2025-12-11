@@ -1,242 +1,83 @@
 ```
+# app.py
+import base64
+import io
+import json
 import pandas as pd
 import numpy as np
-import re
+from dash import Dash, html, dcc, Input, Output, State, dash_table
+import plotly.express as px
+import plotly.graph_objects as go
 
-def compare_mg_inscope_mastergroup_strict(
-    mg_p,
-    mg_c,
-    cust_gbm_p,
-    cust_cmb_p,
-    cust_gbm_c,
-    cust_cmb_c,
-    inscope_col_mg,
-    financial_col='Total Operating Income (HORIS YTD Financials)',
-    mastergroup_col='Mastergroup Name',
-    out_file='mg_exceptions_mastergroup_strict.xlsx'
-):
+# ---------------------------
+# Config / Defaults
+# ---------------------------
+MASTER_COL_DEFAULT = "Mastergroup name"
+FIN_COL_DEFAULT = "Total Operating Income (HORIS YTD Financials)"
+
+# ---------------------------
+# Helpers
+# ---------------------------
+def parse_contents(contents, filename):
     """
-    Full robust implementation that:
-    - normalizes & flattens column names (handles NBSP, MultiIndex, trailing spaces),
-    - resolves primary key + inscope cols + mastergroup via whitespace/case-insensitive lookup,
-    - avoids set_index() and builds safe mappings (handles duplicates, unhashable keys),
-    - uses shape-safe assignments to avoid "unshapable series" errors,
-    - attaches financials strictly by mastergroup (prefers cust_gbm, then cust_cmb),
-    - writes Additions/Deletions/Changes sheets and returns dict of DataFrames.
+    Parse uploaded file contents (base64) into a pandas DataFrame.
+    Supports XLSX/XLS and CSV.
     """
-
-    # -------------------- helpers --------------------
-    def flatten_multiindex_cols(df):
-        if getattr(df.columns, "nlevels", 1) > 1:
-            df = df.copy()
-            df.columns = [" ".join([("" if v is None else str(v)).strip() for v in col]).strip() for col in df.columns]
-        return df
-
-    def normalize_cols_list(colname):
-        """Normalized key for comparing column names: remove whitespace and lowercase."""
-        return re.sub(r'\s+', '', str(colname)).lower()
-
-    def normalize_and_make_unique(df):
-        """
-        Return cleaned df and a map: normalized_key -> actual_clean_column_name.
-        - cleans NBSPs, collapses whitespaces, strips
-        - makes duplicate names unique by appending __dupN
-        """
-        df = df.copy()
-        df = flatten_multiindex_cols(df)
-
-        cleaned = []
-        for c in df.columns:
-            s = "" if c is None else str(c)
-            s = s.replace('\xa0', ' ')
-            s = re.sub(r'\s+', ' ', s)
-            s = s.strip()
-            cleaned.append(s)
-
-        seen = {}
-        unique_cols = []
-        for s in cleaned:
-            if s in seen:
-                seen[s] += 1
-                new = f"{s}__dup{seen[s]}"
-            else:
-                seen[s] = 0
-                new = s
-            unique_cols.append(new)
-
-        df.columns = unique_cols
-
-        norm_map = {}
-        for actual in unique_cols:
-            nk = normalize_cols_list(actual)
-            if nk not in norm_map:
-                norm_map[nk] = actual
-
-        return df, norm_map
-
-    def build_combined_map(maps_in_order):
-        combined = {}
-        for m in maps_in_order:
-            if not isinstance(m, dict):
-                continue
-            for k, v in m.items():
-                if k not in combined:
-                    combined[k] = v
-        return combined
-
-    def resolve_name(requested, combined_map):
-        nk = normalize_cols_list(requested)
-        return combined_map.get(nk)
-
-    def safe_select(df, cols):
-        out = pd.DataFrame(index=df.index)
-        for c in cols:
-            if c in df.columns:
-                out[c] = df[c]
-            else:
-                out[c] = np.nan
-        return out
-
-    # ---- robust key normalization / hashing for mapping ----
-    def _normalize_key_for_mapping(k):
-        """Return a stable, hashable representation for mapping lookups or None for invalid keys."""
-        # skip None / NaN
-        try:
-            if k is None:
-                return None
-            if isinstance(k, float) and np.isnan(k):
-                return None
-        except Exception:
-            pass
-
-        # if hashable, return as-is
-        try:
-            hash(k)
-            return k
-        except TypeError:
-            # convert common unhashable types
-            if isinstance(k, (list, tuple)):
-                return tuple(k)
-            # fallback to string representation
-            try:
-                return str(k)
-            except Exception:
-                return repr(k)
-
-    def build_safe_mapping(df, key_col, val_col):
-        """
-        Build mapping normalized_key -> value (first non-null wins).
-        Skips NaN keys and converts unhashable keys to stable forms.
-        """
-        mapping = {}
-        if not isinstance(df, pd.DataFrame):
-            return mapping
-        if key_col not in df.columns or val_col not in df.columns:
-            return mapping
-
-        for _, r in df[[key_col, val_col]].iterrows():
-            raw_k = r[key_col]
-            # skip None/NaN
-            try:
-                if raw_k is None or (isinstance(raw_k, float) and np.isnan(raw_k)):
-                    continue
-            except Exception:
-                pass
-
-            nk = _normalize_key_for_mapping(raw_k)
-            if nk is None:
-                continue
-            if nk not in mapping:
-                mapping[nk] = r[val_col]
-        return mapping
-
-    def _lookup_in_mapping(mapping, raw_key):
-        nk = _normalize_key_for_mapping(raw_key)
-        if nk is None:
-            return np.nan
-        return mapping.get(nk, np.nan)
-
-    # -------------------- normalize all incoming frames --------------------
-    frames = {
-        'mg_p': mg_p,
-        'mg_c': mg_c,
-        'cust_gbm_p': cust_gbm_p,
-        'cust_cmb_p': cust_cmb_p,
-        'cust_gbm_c': cust_gbm_c,
-        'cust_cmb_c': cust_cmb_c
-    }
-    norm_maps = {}
-    for k, df in frames.items():
-        if isinstance(df, pd.DataFrame):
-            df_clean, map_clean = normalize_and_make_unique(df)
-            frames[k] = df_clean
-            norm_maps[k] = map_clean
+    if contents is None:
+        return None
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    try:
+        if filename.lower().endswith(('.xls', '.xlsx')):
+            return pd.read_excel(io.BytesIO(decoded))
+        elif filename.lower().endswith('.csv'):
+            return pd.read_csv(io.StringIO(decoded.decode('utf-8')))
         else:
-            frames[k] = pd.DataFrame()
-            norm_maps[k] = {}
+            return None
+    except Exception as e:
+        print("Error parsing file:", e)
+        return None
 
-    mg_p = frames['mg_p']
-    mg_c = frames['mg_c']
-    cust_gbm_p = frames['cust_gbm_p']
-    cust_cmb_p = frames['cust_cmb_p']
-    cust_gbm_c = frames['cust_gbm_c']
-    cust_cmb_c = frames['cust_cmb_c']
-
-    combined_map = build_combined_map([
-        norm_maps.get('mg_c', {}), norm_maps.get('mg_p', {}),
-        norm_maps.get('cust_gbm_c', {}), norm_maps.get('cust_cmb_c', {}),
-        norm_maps.get('cust_gbm_p', {}), norm_maps.get('cust_cmb_p', {})
-    ])
-
-    # -------------------- resolve inscope + primary key --------------------
+def compare_mg_strict(mg_p, mg_c, cust_gbm_p, cust_cmb_p, cust_gbm_c, cust_cmb_c,
+                      inscope_col_mg, mastergroup_col=MASTER_COL_DEFAULT, financial_col=FIN_COL_DEFAULT):
+    """
+    Strict comparison: use only inscope cols to detect additions/deletions/changes.
+    Primary key = first inscope_col_mg element.
+    Attach financials strictly by mastergroup_col.
+    Returns additions_df, deletions_df, changes_df
+    """
     inscope = list(inscope_col_mg)
     if len(inscope) == 0:
         raise ValueError("inscope_col_mg must contain at least one column name.")
+    primary_key = inscope[0]
 
-    requested_pk = inscope[0]
-    resolved_pk = resolve_name(requested_pk, combined_map)
-    if resolved_pk is None:
-        raise ValueError(f"Primary key '{requested_pk}' not found after normalization. Available keys: {list(combined_map.keys())}")
+    # Validate
+    for df, name in [(mg_p, 'mg_p'), (mg_c, 'mg_c')]:
+        if df is None:
+            raise ValueError(f"{name} is required")
+        if primary_key not in df.columns:
+            raise ValueError(f"Primary key '{primary_key}' must exist in {name}")
 
-    resolved_compare_cols = []
-    for c in inscope:
-        rc = resolve_name(c, combined_map)
-        if rc is None:
-            raise ValueError(f"Inscope column '{c}' not found after normalization. Available keys: {list(combined_map.keys())}")
-        resolved_compare_cols.append(rc)
+    # Reduce to unique rows on inscope columns
+    mg_p_ins = mg_p[inscope].drop_duplicates().copy()
+    mg_c_ins = mg_c[inscope].drop_duplicates().copy()
 
-    primary_key = resolved_pk
-    compare_cols = resolved_compare_cols
-
-    # -------------------- resolve mastergroup --------------------
-    resolved_master = resolve_name(mastergroup_col, combined_map)
-    if resolved_master is None:
-        raise ValueError(f"Mastergroup column '{mastergroup_col}' not found after normalization. Available keys: {list(combined_map.keys())}")
-    mastergroup_col = resolved_master
-
-    # -------------------- prepare inscope subsets --------------------
-    mg_p_inscope = safe_select(mg_p, compare_cols).drop_duplicates().reset_index(drop=True).copy()
-    mg_c_inscope = safe_select(mg_c, compare_cols).drop_duplicates().reset_index(drop=True).copy()
-
-    # -------------------- additions / deletions --------------------
-    keys_p = set(mg_p_inscope[primary_key].dropna().unique())
-    keys_c = set(mg_c_inscope[primary_key].dropna().unique())
+    keys_p = set(mg_p_ins[primary_key].dropna().unique())
+    keys_c = set(mg_c_ins[primary_key].dropna().unique())
 
     added_keys = keys_c - keys_p
     deleted_keys = keys_p - keys_c
     common_keys = keys_p & keys_c
 
-    additions = (mg_c[mg_c[primary_key].isin(added_keys)].copy().reset_index(drop=True)
-                 if not mg_c.empty and primary_key in mg_c.columns else pd.DataFrame(columns=mg_c.columns))
-    deletions = (mg_p[mg_p[primary_key].isin(deleted_keys)].copy().reset_index(drop=True)
-                 if not mg_p.empty and primary_key in mg_p.columns else pd.DataFrame(columns=mg_p.columns))
+    additions = mg_c[mg_c[primary_key].isin(added_keys)].copy().reset_index(drop=True)
+    deletions = mg_p[mg_p[primary_key].isin(deleted_keys)].copy().reset_index(drop=True)
 
-    # -------------------- changes --------------------
+    # Changes: compare only inscope cols excluding primary
+    changed_rows = []
     if common_keys:
-        merged = mg_p_inscope.merge(mg_c_inscope, on=primary_key, how='inner', suffixes=('_p', '_c'))
-
-        def row_changed(row):
-            for col in compare_cols:
+        merged = mg_p_ins.merge(mg_c_ins, on=primary_key, how='inner', suffixes=('_p','_c'))
+        def is_row_changed(row):
+            for col in inscope:
                 if col == primary_key:
                     continue
                 a = row.get(f"{col}_p", np.nan)
@@ -250,148 +91,364 @@ def compare_mg_inscope_mastergroup_strict(
                     if str(a) != str(b):
                         return True
             return False
-
-        merged['is_changed'] = merged.apply(row_changed, axis=1)
-        changed_keys = merged.loc[merged['is_changed'], primary_key].unique()
-
-        changes_p_rows = (mg_p[mg_p[primary_key].isin(changed_keys)].copy().reset_index(drop=True)
-                          if primary_key in mg_p.columns else pd.DataFrame())
-        changes_c_rows = (mg_c[mg_c[primary_key].isin(changed_keys)].copy().reset_index(drop=True)
-                          if primary_key in mg_c.columns else pd.DataFrame())
-
-        # Build changed columns map
-        changed_cols_map = {}
-        for _, r in merged[merged['is_changed']].iterrows():
-            key = r[primary_key]
-            changed = []
-            for col in compare_cols:
-                if col == primary_key:
-                    continue
-                left = r.get(f"{col}_p", np.nan)
-                right = r.get(f"{col}_c", np.nan)
-                try:
-                    if not (pd.isna(left) and pd.isna(right)) and (left != right):
-                        changed.append(col)
-                except Exception:
-                    if str(left) != str(right):
-                        changed.append(col)
-            changed_cols_map[key] = changed
-
-        # side-by-side (reset indices to ensure shape-safe assignments)
-        p_side = changes_p_rows[[c for c in compare_cols if c in changes_p_rows.columns]].copy().add_suffix('_p').reset_index(drop=True)
-        c_side = changes_c_rows[[c for c in compare_cols if c in changes_c_rows.columns]].copy().add_suffix('_c').reset_index(drop=True)
-
-        left_key = f"{primary_key}_p"
-        right_key = f"{primary_key}_c"
-        changes = p_side.merge(c_side, left_on=left_key, right_on=right_key, how='outer', suffixes=('_p','_c')).reset_index(drop=True)
-
-        # unify primary key as shape-safe list assignment
-        pk_values = []
-        for i in range(len(changes)):
-            v_right = changes.at[i, right_key] if right_key in changes.columns else np.nan
-            v_left = changes.at[i, left_key] if left_key in changes.columns else np.nan
-            pk_values.append(v_right if pd.notna(v_right) else v_left)
-        changes[primary_key] = pk_values
-
-        # changed_columns as shape-safe list
-        changes['changed_columns'] = [changed_cols_map.get(k, []) for k in changes[primary_key].tolist()]
-
-        # drop duplicate key suffix cols
-        changes = changes.drop(columns=[left_key, right_key], errors='ignore')
-
-        # Attach mastergroup using safe mapping and shape-safe assignment
-        mg_c_key_master_map = build_safe_mapping(mg_c, primary_key, mastergroup_col)
-        mg_p_key_master_map = build_safe_mapping(mg_p, primary_key, mastergroup_col)
-
-        def get_master_for_key(k):
-            v = _lookup_in_mapping(mg_c_key_master_map, k)
-            if pd.notna(v):
-                return v
-            v = _lookup_in_mapping(mg_p_key_master_map, k)
-            if pd.notna(v):
-                return v
-            return np.nan
-
-        changes[mastergroup_col] = [get_master_for_key(k) for k in changes[primary_key].tolist()]
-
+        merged['is_changed'] = merged.apply(is_row_changed, axis=1)
+        changed_keys = merged.loc[merged['is_changed'], primary_key].unique().tolist()
+        # build changes side by side (inscope only)
+        if changed_keys:
+            p_side = mg_p[mg_p[primary_key].isin(changed_keys)][inscope].copy().add_suffix('_p')
+            c_side = mg_c[mg_c[primary_key].isin(changed_keys)][inscope].copy().add_suffix('_c')
+            changes = p_side.merge(c_side, left_on=f"{primary_key}_p", right_on=f"{primary_key}_c", how='outer', suffixes=('',''))
+            # unify primary key column
+            changes[primary_key] = changes[f"{primary_key}_c"].combine_first(changes[f"{primary_key}_p"])
+            # compute changed_columns
+            changed_map = {}
+            for _, row in merged[merged['is_changed']].iterrows():
+                key = row[primary_key]
+                cols_changed = []
+                for col in inscope:
+                    if col == primary_key:
+                        continue
+                    try:
+                        if not (pd.isna(row[f"{col}_p"]) and pd.isna(row[f"{col}_c"])) and (row[f"{col}_p"] != row[f"{col}_c"]):
+                            cols_changed.append(col)
+                    except Exception:
+                        if str(row[f"{col}_p"]) != str(row[f"{col}_c"]):
+                            cols_changed.append(col)
+                changed_map[key] = cols_changed
+            changes['changed_columns'] = changes[primary_key].map(lambda k: changed_map.get(k, []))
+            # attach mastergroup (prefer current)
+            mgc_map = mg_c.set_index(primary_key)[mastergroup_col].to_dict() if mastergroup_col in mg_c.columns else {}
+            mgp_map = mg_p.set_index(primary_key)[mastergroup_col].to_dict() if mastergroup_col in mg_p.columns else {}
+            def choose_master(k):
+                return mgc_map.get(k, mgp_map.get(k, None))
+            changes[mastergroup_col] = changes[primary_key].map(choose_master)
+            # reorder columns
+            cols = [primary_key, mastergroup_col] + [c for c in changes.columns if c not in [primary_key, mastergroup_col]]
+            changes = changes[cols]
+        else:
+            changes = pd.DataFrame(columns=[primary_key, mastergroup_col, 'changed_columns'])
     else:
-        cols = [primary_key] + [f"{c}_p" for c in compare_cols if c != primary_key] + [f"{c}_c" for c in compare_cols if c != primary_key] + ['changed_columns', mastergroup_col]
-        changes = pd.DataFrame(columns=cols)
+        changes = pd.DataFrame(columns=[primary_key, mastergroup_col, 'changed_columns'])
 
-    # -------------------- ensure mastergroup exists for additions/deletions --------------------
-    if mastergroup_col not in additions.columns:
-        if primary_key in mg_c.columns and mastergroup_col in mg_c.columns and not mg_c[[primary_key, mastergroup_col]].drop_duplicates().empty and not additions.empty:
-            additions = additions.merge(mg_c[[primary_key, mastergroup_col]].drop_duplicates(), on=primary_key, how='left').reset_index(drop=True)
-        else:
-            additions[mastergroup_col] = np.nan
+    # Attach financials strictly by mastergroup_col
+    def attach_fin(df_rows, cust_gbm, cust_cmb, current=True):
+        if df_rows is None or df_rows.empty:
+            return pd.DataFrame() if isinstance(df_rows, pd.DataFrame) else df_rows
+        df = df_rows.copy()
+        if mastergroup_col not in df.columns:
+            # for additions this should be present in mg_c, for deletions in mg_p
+            # attempt to bring it from mg frames if missing (best-effort)
+            df[mastergroup_col] = None
+        # build lookup from gbm then cmb
+        gbm_map = {}
+        cmb_map = {}
+        if cust_gbm is not None and mastergroup_col in cust_gbm.columns and financial_col in cust_gbm.columns:
+            gbm_map = cust_gbm.set_index(mastergroup_col)[financial_col].to_dict()
+        if cust_cmb is not None and mastergroup_col in cust_cmb.columns and financial_col in cust_cmb.columns:
+            cmb_map = cust_cmb.set_index(mastergroup_col)[financial_col].to_dict()
+        def lookup(mgname):
+            v = gbm_map.get(mgname)
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                v = cmb_map.get(mgname)
+            try:
+                return float(v) if v is not None else np.nan
+            except Exception:
+                return np.nan
+        df[financial_col] = df[mastergroup_col].map(lookup)
+        # coerce numeric
+        df[financial_col] = pd.to_numeric(df[financial_col], errors='coerce')
+        return df
 
-    if mastergroup_col not in deletions.columns:
-        if primary_key in mg_p.columns and mastergroup_col in mg_p.columns and not mg_p[[primary_key, mastergroup_col]].drop_duplicates().empty and not deletions.empty:
-            deletions = deletions.merge(mg_p[[primary_key, mastergroup_col]].drop_duplicates(), on=primary_key, how='left').reset_index(drop=True)
-        else:
-            deletions[mastergroup_col] = np.nan
+    additions = additions if not additions.empty else pd.DataFrame(columns=mg_c.columns)
+    deletions = deletions if not deletions.empty else pd.DataFrame(columns=mg_p.columns)
 
-    # -------------------- attach financials strictly by mastergroup --------------------
-    def attach_fin_by_mastergroup_strict(df_rows, cust_gbm_source, cust_cmb_source):
-        if df_rows.empty:
-            df_rows[financial_col] = np.nan
-            return df_rows
-        if mastergroup_col not in df_rows.columns:
-            df_rows[financial_col] = np.nan
-            return df_rows
+    additions = attach_fin(additions, cust_gbm_c, cust_cmb_c)
+    changes = attach_fin(changes, cust_gbm_c, cust_cmb_c) if not changes.empty else changes
+    deletions = attach_fin(deletions, cust_gbm_p, cust_cmb_p)
 
-        df = df_rows.copy().reset_index(drop=True)
+    # ensure financial col numeric
+    for df in (additions, changes, deletions):
+        if isinstance(df, pd.DataFrame):
+            if financial_col not in df.columns:
+                df[financial_col] = np.nan
+            df[financial_col] = pd.to_numeric(df[financial_col], errors='coerce')
 
-        gbm_sub = pd.DataFrame(columns=[mastergroup_col, financial_col])
-        cmb_sub = pd.DataFrame(columns=[mastergroup_col, financial_col])
-
-        if isinstance(cust_gbm_source, pd.DataFrame) and mastergroup_col in cust_gbm_source.columns and financial_col in cust_gbm_source.columns:
-            gbm_sub = cust_gbm_source[[mastergroup_col, financial_col]].drop_duplicates().reset_index(drop=True)
-        if isinstance(cust_cmb_source, pd.DataFrame) and mastergroup_col in cust_cmb_source.columns and financial_col in cust_cmb_source.columns:
-            cmb_sub = cust_cmb_source[[mastergroup_col, financial_col]].drop_duplicates().reset_index(drop=True)
-
-        tmp = df.merge(gbm_sub, on=mastergroup_col, how='left').reset_index(drop=True)
-
-        if financial_col not in tmp.columns:
-            tmp[financial_col] = np.nan
-
-        na_mask = tmp[financial_col].isna()
-        if na_mask.any() and not cmb_sub.empty:
-            missing_series = tmp.loc[na_mask, mastergroup_col].drop_duplicates()
-            if not missing_series.empty:
-                missing_df = pd.DataFrame({mastergroup_col: missing_series.values})
-                merged_cmb = missing_df.merge(cmb_sub, on=mastergroup_col, how='left')
-                tmp = tmp.merge(merged_cmb, on=mastergroup_col, how='left', suffixes=('','_cmbtmp')).reset_index(drop=True)
-                if financial_col + '_cmbtmp' in tmp.columns:
-                    tmp[financial_col] = tmp[financial_col].fillna(tmp[financial_col + '_cmbtmp'])
-                    tmp = tmp.drop(columns=[financial_col + '_cmbtmp'])
-
-        tmp[financial_col] = pd.to_numeric(tmp[financial_col], errors='coerce')
-        return tmp.reset_index(drop=True)
-
-    additions = attach_fin_by_mastergroup_strict(additions, cust_gbm_c, cust_cmb_c)
-    changes = attach_fin_by_mastergroup_strict(changes, cust_gbm_c, cust_cmb_c)
-    deletions = attach_fin_by_mastergroup_strict(deletions, cust_gbm_p, cust_cmb_p)
-
-    # -------------------- ensure financial_col numeric and sort --------------------
-    for df_ in (additions, changes, deletions):
-        if financial_col not in df_.columns:
-            df_[financial_col] = np.nan
-        df_[financial_col] = pd.to_numeric(df_[financial_col], errors='coerce')
-
+    # Sort descending by financial_col
     additions = additions.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
-    changes = changes.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
     deletions = deletions.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
+    if isinstance(changes, pd.DataFrame) and not changes.empty:
+        changes = changes.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
 
-    # -------------------- write excel and return --------------------
-    with pd.ExcelWriter(out_file, engine='openpyxl') as writer:
-        additions.to_excel(writer, sheet_name='Additions', index=False)
-        deletions.to_excel(writer, sheet_name='Deletions', index=False)
-        changes.to_excel(writer, sheet_name='Changes', index=False)
+    return additions, deletions, changes
 
-    return {
-        'additions': additions,
-        'deletions': deletions,
-        'changes': changes,
-        'out_file': out_file
-    }
+def make_waterfall(added, deleted, net):
+    fig = go.Figure(go.Waterfall(
+        name = "Revenue Movement",
+        orientation = "v",
+        measure = ["relative", "relative", "total"],
+        x = ["Additions", "Deletions", "Net Change"],
+        y = [added, -deleted, net],
+        connector = {"line":{"color":"grey"}}
+    ))
+    fig.update_layout(title_text="Revenue Waterfall", height=400, margin=dict(l=40,r=20,t=50,b=20))
+    return fig
+
+# ---------------------------
+# Dash App Layout
+# ---------------------------
+app = Dash(__name__)
+app.title = "MG Exceptions — Storytelling (Dash)"
+
+app.layout = html.Div([
+    html.H2("MG Exceptions — Storytelling Dashboard (Dash)"),
+    html.Div("Upload required files: mg_p, mg_c, cust_gbm_p, cust_cmb_p, cust_gbm_c, cust_cmb_c"),
+    html.Div([
+        html.Div([
+            html.Label("mg_p (prior month)"),
+            dcc.Upload(id='upload-mg-p', children=html.Button("Upload mg_p"), multiple=False),
+            html.Div(id='mg-p-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+        html.Div([
+            html.Label("mg_c (current month)"),
+            dcc.Upload(id='upload-mg-c', children=html.Button("Upload mg_c"), multiple=False),
+            html.Div(id='mg-c-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+    ]),
+    html.Br(),
+    html.Div([
+        html.Div([
+            html.Label("cust_gbm_p"),
+            dcc.Upload(id='upload-cust-gbm-p', children=html.Button("Upload cust_gbm_p"), multiple=False),
+            html.Div(id='cust-gbm-p-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+        html.Div([
+            html.Label("cust_cmb_p"),
+            dcc.Upload(id='upload-cust-cmb-p', children=html.Button("Upload cust_cmb_p"), multiple=False),
+            html.Div(id='cust-cmb-p-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+    ]),
+    html.Br(),
+    html.Div([
+        html.Div([
+            html.Label("cust_gbm_c"),
+            dcc.Upload(id='upload-cust-gbm-c', children=html.Button("Upload cust_gbm_c"), multiple=False),
+            html.Div(id='cust-gbm-c-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+        html.Div([
+            html.Label("cust_cmb_c"),
+            dcc.Upload(id='upload-cust-cmb-c', children=html.Button("Upload cust_cmb_c"), multiple=False),
+            html.Div(id='cust-cmb-c-fname', style={'fontSize':12, 'color':'gray'})
+        ], style={'display':'inline-block','marginRight':20}),
+    ]),
+    html.Hr(),
+    html.Div([
+        html.Label("Inscope columns (comma-separated). First = primary key"),
+        dcc.Input(id='inscope-input', type='text', style={'width':'70%'}, value="PS ID,Mastergroup name,Segment"),
+    ]),
+    html.Br(),
+    html.Div([
+        html.Label("Mastergroup column name"),
+        dcc.Input(id='master-col', type='text', value=MASTER_COL_DEFAULT),
+        html.Label(" Financial column name", style={'marginLeft':20}),
+        dcc.Input(id='fin-col', type='text', value=FIN_COL_DEFAULT, style={'width':'40%'}),
+    ], style={'marginTop':10}),
+    html.Br(),
+    html.Button("Run Comparison", id='run-button'),
+    html.Div(id='run-error', style={'color':'red'}),
+    html.Hr(),
+    html.Div(id='summary-area'),
+    html.Hr(),
+    html.Div([
+        html.Div([
+            html.Label("Select up to 2 features for storytelling (will be populated after uploads)"),
+            dcc.Dropdown(id='feature-dropdown', multi=True, value=[], placeholder="Select features"),
+        ], style={'width':'50%','display':'inline-block'}),
+        html.Div(id='feature-warning', style={'color':'red','marginLeft':20})
+    ]),
+    html.Br(),
+    html.Div(id='kpi-cards', style={'display':'flex','gap':'10px'}),
+    html.Br(),
+    html.Div([
+        dcc.Graph(id='additions-bar', style={'width':'48%','display':'inline-block'}),
+        dcc.Graph(id='deletions-bar', style={'width':'48%','display':'inline-block'})
+    ]),
+    html.Br(),
+    dcc.Graph(id='waterfall'),
+    html.Hr(),
+    html.H4("Detailed Tables"),
+    dcc.Tabs(id='tabs', value='tab-add', children=[
+        dcc.Tab(label='Additions', value='tab-add'),
+        dcc.Tab(label='Deletions', value='tab-del'),
+        dcc.Tab(label='Changes', value='tab-chg'),
+    ]),
+    html.Div(id='tab-content'),
+    html.Br(),
+    html.Div([
+        html.Button("Download Additions (xlsx)", id='dl-add'),
+        html.Button("Download Deletions (xlsx)", id='dl-del'),
+        html.Button("Download Changes (xlsx)", id='dl-chg'),
+        html.Div(id='download-link', style={'display':'inline-block','marginLeft':20})
+    ]),
+    # hidden store to keep dataframes between callbacks
+    dcc.Store(id='store-mg-p'),
+    dcc.Store(id='store-mg-c'),
+    dcc.Store(id='store-cust-gbm-p'),
+    dcc.Store(id='store-cust-cmb-p'),
+    dcc.Store(id='store-cust-gbm-c'),
+    dcc.Store(id='store-cust-cmb-c'),
+    dcc.Store(id='store-additions'),
+    dcc.Store(id='store-deletions'),
+    dcc.Store(id='store-changes'),
+], style={'margin':20, 'fontFamily':'Arial, sans-serif'})
+
+# ---------------------------
+# Callbacks: upload handlers to store the dataframes in json
+# ---------------------------
+def upload_to_store(contents, filename):
+    if contents is None:
+        return None
+    df = parse_contents(contents, filename)
+    if df is None:
+        return None
+    return df.to_json(date_format='iso', orient='records')
+
+@app.callback(Output('mg-p-fname','children'),
+              Output('store-mg-p','data'),
+              Input('upload-mg-p','contents'),
+              State('upload-mg-p','filename'))
+def handle_mg_p(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+@app.callback(Output('mg-c-fname','children'),
+              Output('store-mg-c','data'),
+              Input('upload-mg-c','contents'),
+              State('upload-mg-c','filename'))
+def handle_mg_c(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+@app.callback(Output('cust-gbm-p-fname','children'),
+              Output('store-cust-gbm-p','data'),
+              Input('upload-cust-gbm-p','contents'),
+              State('upload-cust-gbm-p','filename'))
+def handle_cust_gbm_p(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+@app.callback(Output('cust-cmb-p-fname','children'),
+              Output('store-cust-cmb-p','data'),
+              Input('upload-cust-cmb-p','contents'),
+              State('upload-cust-cmb-p','filename'))
+def handle_cust_cmb_p(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+@app.callback(Output('cust-gbm-c-fname','children'),
+              Output('store-cust-gbm-c','data'),
+              Input('upload-cust-gbm-c','contents'),
+              State('upload-cust-gbm-c','filename'))
+def handle_cust_gbm_c(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+@app.callback(Output('cust-cmb-c-fname','children'),
+              Output('store-cust-cmb-c','data'),
+              Input('upload-cust-cmb-c','contents'),
+              State('upload-cust-cmb-c','filename'))
+def handle_cust_cmb_c(contents, filename):
+    if contents:
+        df_json = upload_to_store(contents, filename)
+        return f"{filename}", df_json
+    return "", None
+
+# ---------------------------
+# Run Comparison callback
+# ---------------------------
+@app.callback(
+    Output('run-error','children'),
+    Output('store-additions','data'),
+    Output('store-deletions','data'),
+    Output('store-changes','data'),
+    Output('feature-dropdown','options'),
+    Input('run-button','n_clicks'),
+    State('store-mg-p','data'),
+    State('store-mg-c','data'),
+    State('store-cust-gbm-p','data'),
+    State('store-cust-cmb-p','data'),
+    State('store-cust-gbm-c','data'),
+    State('store-cust-cmb-c','data'),
+    State('inscope-input','value'),
+    State('master-col','value'),
+    State('fin-col','value')
+)
+def run_comparison(nclicks, mgp_json, mgc_json, gtmp_json, ctpm_json, gtc_json, ctcm_json, inscope_txt, master_col, fin_col):
+    if not nclicks:
+        return "", None, None, None, []
+    try:
+        # load dfs
+        mg_p = pd.read_json(mgp_json, orient='records') if mgp_json else None
+        mg_c = pd.read_json(mgc_json, orient='records') if mgc_json else None
+        cust_gbm_p = pd.read_json(gtmp_json, orient='records') if gtmp_json else pd.DataFrame()
+        cust_cmb_p = pd.read_json(ctpm_json, orient='records') if ctpm_json else pd.DataFrame()
+        cust_gbm_c = pd.read_json(gtc_json, orient='records') if gtc_json else pd.DataFrame()
+        cust_cmb_c = pd.read_json(ctcm_json, orient='records') if ctcm_json else pd.DataFrame()
+
+        inscope_cols = [s.strip() for s in inscope_txt.split(',') if s.strip()]
+
+        adds, dels, chgs = compare_mg_strict(mg_p, mg_c, cust_gbm_p, cust_cmb_p, cust_gbm_c, cust_cmb_c,
+                                             inscope_cols, mastergroup_col=master_col, financial_col=fin_col)
+
+        # prepare feature dropdown candidates: pick columns from additions/deletions excluding master and fin col,
+        # but only include columns with reasonable cardinality
+        samp = adds if not adds.empty else (dels if not dels.empty else (chgs if isinstance(chgs,pd.DataFrame) and not chgs.empty else None))
+        options = []
+        if samp is not None and not samp.empty:
+            candidate_cols = [c for c in samp.columns if c not in [master_col, fin_col]]
+            for c in candidate_cols:
+                # include columns with < 100 unique values to keep UI manageable
+                if samp[c].nunique() < 200:
+                    options.append({'label': c, 'value': c})
+
+        # store results as json
+        adds_json = adds.to_json(orient='records', date_format='iso')
+        dels_json = dels.to_json(orient='records', date_format='iso')
+        chgs_json = chgs.to_json(orient='records', date_format='iso') if isinstance(chgs,pd.DataFrame) else json.dumps(chgs)
+
+        return "", adds_json, dels_json, chgs_json, options
+    except Exception as e:
+        return f"Error: {str(e)}", None, None, None, []
+
+# ---------------------------
+# KPI & Charts callbacks
+# ---------------------------
+@app.callback(
+    Output('kpi-cards','children'),
+    Output('additions-bar','figure'),
+    Output('deletions-bar','figure'),
+    Output('waterfall','figure'),
+    Input('store-additions','data'),
+    Input('store-deletions','data'),
+    Input('store-changes','data'),
+    Input('feature-dropdown','value'),
+    State('master-col','value'),
+    State('fin-col','value')
+)
+def update_visuals(add_json, del_json, chg_json, selected_features, master_col, fin_col):
+    adds = pd.read_json(add_json, orient='records') if add_json else pd.DataFrame()
+    dels = pd.read_json(del_json, orient='records') if del_json else pd.DataFrame()
+    chgs = pd.read_json(chg_json, orient='records') if chg_json else pd.DataFrame()
+
+    # basic KPIs
+    rev_added = float(adds[fin_col].sum()) if not adds.empty and fin_col in adds.columns else 0.0
+    rev_deleted = f
