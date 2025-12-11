@@ -1,315 +1,434 @@
 ```
 import pandas as pd
 import numpy as np
-from typing import Tuple, Dict
 
-# ============================================================
-# UNIT DETECTION & SCALING HELPERS
-# ============================================================
+def compare_mg_inscope_mastergroup_strict(
+    mg_p,
+    mg_c,
+    cust_gbm_p,
+    cust_cmb_p,
+    cust_gbm_c,
+    cust_cmb_c,
+    inscope_col_mg,
+    financial_col='Total Operating Income (HORIS YTD Financials)',
+    mastergroup_col='Mastergroup name',
+    out_file='mg_exceptions_mastergroup_strict.xlsx'
+):
+    """
+    Compare mg_p and mg_c considering ONLY columns in inscope_col_mg.
+    Primary key = inscope_col_mg[0]. Detect Additions / Deletions / Changes.
+    Attach financial_col strictly by matching on mastergroup_col (must exist in mg and cust).
+    Writes three sheets (Additions, Deletions, Changes) and returns dict of DataFrames.
+    """
 
-def _detect_unit(metric_col: str):
-    text = metric_col.upper()
-    if "$M" in text:
-        return "M"
-    if "$K" in text:
-        return "K"
-    return None
+    # Defensive copies
+    mg_p = mg_p.copy()
+    mg_c = mg_c.copy()
+    cust_gbm_p = cust_gbm_p.copy()
+    cust_cmb_p = cust_cmb_p.copy()
+    cust_gbm_c = cust_gbm_c.copy()
+    cust_cmb_c = cust_cmb_c.copy()
+    inscope = list(inscope_col_mg)
 
-def _to_mn(value: float, unit: str):
-    if pd.isna(value): return value
-    if unit == "K": return value / 1000.0
-    return value  # unit M or None assumed already mn-like for formatting
+    if len(inscope) == 0:
+        raise ValueError("inscope_col_mg must contain at least one column name.")
 
-def _fmt_magnitude_mn_bn(mn_value: float):
-    if pd.isna(mn_value): return "N/A"
-    sign = "+" if mn_value > 0 else "-" if mn_value < 0 else ""
-    abs_val = abs(mn_value)
-    if abs_val >= 1000:
-        bn = abs_val / 1000.0
-        s = f"{int(bn):,}bn" if bn.is_integer() else f"{bn:,.1f}bn"
+    primary_key = inscope[0]
+    compare_cols = inscope[:]  # only these columns matter
+
+    # Basic validation
+    if primary_key not in mg_p.columns or primary_key not in mg_c.columns:
+        raise ValueError(f"Primary key '{primary_key}' must exist in both mg_p and mg_c.")
+    if mastergroup_col not in mg_p.columns and mastergroup_col not in mg_c.columns:
+        raise ValueError(f"Mastergroup column '{mastergroup_col}' must exist in mg_p or mg_c.")
+    if mastergroup_col not in cust_gbm_p.columns and mastergroup_col not in cust_cmb_p.columns \
+       and mastergroup_col not in cust_gbm_c.columns and mastergroup_col not in cust_cmb_c.columns:
+        raise ValueError(f"Mastergroup column '{mastergroup_col}' must exist in at least one cust frame.")
+
+    # Reduce to inscope columns for comparison logic
+    mg_p_inscope = mg_p[compare_cols].drop_duplicates().copy()
+    mg_c_inscope = mg_c[compare_cols].drop_duplicates().copy()
+
+    # ---------- Additions / Deletions ----------
+    keys_p = set(mg_p_inscope[primary_key].dropna().unique())
+    keys_c = set(mg_c_inscope[primary_key].dropna().unique())
+
+    added_keys = keys_c - keys_p
+    deleted_keys = keys_p - keys_c
+    common_keys = keys_p & keys_c
+
+    additions = mg_c[mg_c[primary_key].isin(added_keys)].copy().reset_index(drop=True)
+    deletions = mg_p[mg_p[primary_key].isin(deleted_keys)].copy().reset_index(drop=True)
+
+    # ---------- Changes (only inscope cols considered; ignore other columns) ----------
+    if common_keys:
+        merged = mg_p_inscope.merge(mg_c_inscope, on=primary_key, how='inner', suffixes=('_p', '_c'))
+
+        def row_changed(row):
+            # do NOT count primary_key as a change
+            for col in compare_cols:
+                if col == primary_key:
+                    continue
+                a = row.get(f"{col}_p", np.nan)
+                b = row.get(f"{col}_c", np.nan)
+                if pd.isna(a) and pd.isna(b):
+                    continue
+                try:
+                    if (a != b) and not (pd.isna(a) and pd.isna(b)):
+                        return True
+                except Exception:
+                    if str(a) != str(b):
+                        return True
+            return False
+
+        merged['is_changed'] = merged.apply(row_changed, axis=1)
+        changed_keys = merged.loc[merged['is_changed'], primary_key].unique()
+
+        # get original full rows for changed keys
+        changes_p_rows = mg_p[mg_p[primary_key].isin(changed_keys)].copy().reset_index(drop=True)
+        changes_c_rows = mg_c[mg_c[primary_key].isin(changed_keys)].copy().reset_index(drop=True)
+
+        # Build mapping of changed columns per key
+        changed_cols_map = {}
+        for _, r in merged[merged['is_changed']].iterrows():
+            key = r[primary_key]
+            changed = []
+            for col in compare_cols:
+                if col == primary_key:
+                    continue
+                try:
+                    if not (pd.isna(r[f"{col}_p"]) and pd.isna(r[f"{col}_c"])) and (r[f"{col}_p"] != r[f"{col}_c"]):
+                        changed.append(col)
+                except Exception:
+                    if str(r[f"{col}_p"]) != str(r[f"{col}_c"]):
+                        changed.append(col)
+            changed_cols_map[key] = changed
+
+        # create side-by-side inscope columns with _p/_c suffixes
+        p_side = changes_p_rows[compare_cols].copy().add_suffix('_p')
+        c_side = changes_c_rows[compare_cols].copy().add_suffix('_c')
+
+        # Merge sides on primary key suffix
+        changes = p_side.merge(c_side, left_on=f"{primary_key}_p", right_on=f"{primary_key}_c", how='outer', suffixes=('_p','_c'))
+        # unify primary key
+        changes[primary_key] = changes[f"{primary_key}_c"].combine_first(changes[f"{primary_key}_p"])
+        # add changed_columns list
+        changes['changed_columns'] = changes[primary_key].map(lambda k: changed_cols_map.get(k, []))
+        # drop duplicate key suffix cols
+        changes = changes.drop(columns=[f"{primary_key}_p", f"{primary_key}_c"], errors='ignore')
+
+        # Now attach Mastergroup name into changes (prefer current mg_c value)
+        # build helper df: key -> mastergroup (prefer mg_c)
+        mg_c_key_master = mg_c[[primary_key, mastergroup_col]].drop_duplicates().set_index(primary_key)
+        mg_p_key_master = mg_p[[primary_key, mastergroup_col]].drop_duplicates().set_index(primary_key)
+        def get_master_for_key(k):
+            if k in mg_c_key_master.index:
+                return mg_c_key_master.loc[k, mastergroup_col]
+            elif k in mg_p_key_master.index:
+                return mg_p_key_master.loc[k, mastergroup_col]
+            else:
+                return np.nan
+        changes[mastergroup_col] = changes[primary_key].map(get_master_for_key)
     else:
-        s = f"{int(abs_val):,}mn" if abs_val.is_integer() else f"{abs_val:,.1f}mn"
-    return f"{sign}{s}"
+        # empty changes frame with sensible columns
+        cols = [primary_key] + [f"{c}_p" for c in compare_cols if c != primary_key] + [f"{c}_c" for c in compare_cols if c != primary_key] + ['changed_columns', mastergroup_col]
+        changes = pd.DataFrame(columns=cols)
 
-def _fmt_change_yoy_scaled(change: float, yoy: float, metric_col: str):
-    unit = _detect_unit(metric_col)
-    mn = _to_mn(change, unit)
-    ch_str = _fmt_magnitude_mn_bn(mn)
-    if pd.isna(yoy): return f"{ch_str} / N/A"
-    return f"{ch_str} / {yoy:.1f}%"
+    # For additions and deletions, ensure mastergroup_col exists in those rows (it should in mg)
+    if mastergroup_col not in additions.columns:
+        # try to bring mastergroup from mg_c subset
+        mg_c_master = mg_c[[primary_key, mastergroup_col]].drop_duplicates()
+        additions = additions.merge(mg_c_master, on=primary_key, how='left')
+    if mastergroup_col not in deletions.columns:
+        mg_p_master = mg_p[[primary_key, mastergroup_col]].drop_duplicates()
+        deletions = deletions.merge(mg_p_master, on=primary_key, how='left')
 
-def _fmt_total_scaled(total: float, metric_col: str):
-    unit = _detect_unit(metric_col)
-    mn = _to_mn(total, unit)
-    return _fmt_magnitude_mn_bn(mn)
+    # ---------- Attach financials strictly by Mastergroup name ----------
+    def attach_fin_by_mastergroup_strict(df_rows, cust_gbm_source, cust_cmb_source):
+        """
+        Merge on mastergroup_col (strict). Prefer values from cust_gbm_source; if NaN, use cust_cmb_source.
+        """
+        if df_rows.empty:
+            df_rows[financial_col] = np.nan
+            return df_rows
 
+        if mastergroup_col not in df_rows.columns:
+            # can't join strictly
+            df_rows[financial_col] = np.nan
+            return df_rows
 
-# ============================================================
-# AGGREGATION HELPERS
-# ============================================================
+        df = df_rows.copy()
 
-def _compute_aggregates(df_cy, df_py, group_cols, metric_col):
-    cy = df_cy.groupby(group_cols)[[metric_col]].sum().reset_index()
-    cy.rename(columns={metric_col: f"{metric_col}_cy"}, inplace=True)
+        # Prepare cust subsets (only mastergroup_col + financial_col); if financial_col missing, empty df
+        gbm_sub = cust_gbm_source[[mastergroup_col, financial_col]].drop_duplicates() if financial_col in cust_gbm_source.columns and mastergroup_col in cust_gbm_source.columns else pd.DataFrame(columns=[mastergroup_col, financial_col])
+        cmb_sub = cust_cmb_source[[mastergroup_col, financial_col]].drop_duplicates() if financial_col in cust_cmb_source.columns and mastergroup_col in cust_cmb_source.columns else pd.DataFrame(columns=[mastergroup_col, financial_col])
 
-    py = df_py.groupby(group_cols)[[metric_col]].sum().reset_index()
-    py.rename(columns={metric_col: f"{metric_col}_py"}, inplace=True)
+        # Merge gbm
+        tmp = df.merge(gbm_sub, on=mastergroup_col, how='left')
 
-    merged = cy.merge(py, on=group_cols, how="left").fillna(0)
-    merged["Change"] = merged[f"{metric_col}_cy"] - merged[f"{metric_col}_py"]
-    merged["YoY%"] = np.where(
-        merged[f"{metric_col}_py"] != 0,
-        merged["Change"] / merged[f"{metric_col}_py"] * 100,
-        np.nan,
-    )
-    return merged
+        # If missing, try cmb for those mastergroups
+        if financial_col not in tmp.columns:
+            tmp[financial_col] = np.nan
 
-def _row_is_skippable(r):
-    ch, yoy = r["Change"], r["YoY%"]
-    if ch == 0 and (pd.isna(yoy) or yoy == 0): return True
-    return False
+        na_mask = tmp[financial_col].isna()
+        if na_mask.any() and not cmb_sub.empty:
+            missing = tmp.loc[na_mask, mastergroup_col].drop_duplicates()
+            if not missing.empty:
+                merged_cmb = missing.merge(cmb_sub, on=mastergroup_col, how='left')
+                tmp = tmp.merge(merged_cmb, on=mastergroup_col, how='left', suffixes=('','_cmbtmp'))
+                if financial_col + '_cmbtmp' in tmp.columns:
+                    tmp[financial_col] = tmp[financial_col].fillna(tmp[financial_col + '_cmbtmp'])
+                    tmp = tmp.drop(columns=[financial_col + '_cmbtmp'])
 
-def _filter_non_skippable(df):
-    if df.empty: return df
-    mask = df.apply(lambda r: not _row_is_skippable(r), axis=1)
-    return df[mask].copy()
+        tmp[financial_col] = pd.to_numeric(tmp[financial_col], errors='coerce')
+        return tmp
 
-def _join_items(rows, name_col, metric_col):
-    rows = _filter_non_skippable(rows)
-    if rows.empty: return ""
-    parts = []
-    for _, r in rows.iterrows():
-        parts.append(
-            f"{r[name_col]} ({_fmt_change_yoy_scaled(r['Change'], r['YoY%'], metric_col)})"
-        )
-    return " and ".join(parts) if len(parts) == 2 else ", ".join(parts)
+    # Attach: additions & changes from current cust frames; deletions from prior cust frames
+    additions = attach_fin_by_mastergroup_strict(additions, cust_gbm_c, cust_cmb_c)
+    changes = attach_fin_by_mastergroup_strict(changes, cust_gbm_c, cust_cmb_c)
+    deletions = attach_fin_by_mastergroup_strict(deletions, cust_gbm_p, cust_cmb_p)
 
+    # Ensure financial_col exists numeric for sorting
+    for df_ in (additions, changes, deletions):
+        if financial_col not in df_.columns:
+            df_[financial_col] = np.nan
+        df_[financial_col] = pd.to_numeric(df_[financial_col], errors='coerce')
 
-# ============================================================
-# SUMMARY LINE
-# ============================================================
+    # Sort descending by financial_col
+    additions = additions.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
+    changes = changes.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
+    deletions = deletions.sort_values(by=financial_col, ascending=False, na_position='last').reset_index(drop=True)
 
-def summary_line(df_cy, df_py, region_col, region_value, metric_col):
-    cy_r = df_cy[df_cy[region_col] == region_value]
-    py_r = df_py[df_py[region_col] == region_value]
+    # Write to Excel (each sheet contains original rows + financial column)
+    with pd.ExcelWriter(out_file, engine='openpyxl') as writer:
+        additions.to_excel(writer, sheet_name='Additions', index=False)
+        deletions.to_excel(writer, sheet_name='Deletions', index=False)
+        changes.to_excel(writer, sheet_name='Changes', index=False)
 
-    total_cy = cy_r[metric_col].sum()
-    total_py = py_r[metric_col].sum()
+    return {
+        'additions': additions,
+        'deletions': deletions,
+        'changes': changes,
+        'out_file': out_file
+    }
 
-    change = total_cy - total_py
-    yoy = (change / total_py * 100) if total_py != 0 else np.nan
-
-    summary = (
-        f"Managed Total Relationship income of {region_value} of "
-        f"{_fmt_total_scaled(total_cy, metric_col)}, "
-        f"{_fmt_change_yoy_scaled(change, yoy, metric_col)}"
-    )
-
-    sign = 1 if change > 0 else -1 if change < 0 else 0
-
-    return summary, sign
-
-
-# ============================================================
-# SEGMENTS + BUSINESS LINE DRILLDOWN WITH NEGATIVE-BOTTOM RULE
-# ============================================================
-
-def drilldown_with_offsets(df_cy, df_py, region_col, region_value,
-                           group_col, metric_col, n=2, label_name=None):
-
-    label = label_name or group_col
-    summary, region_sign = summary_line(df_cy, df_py, region_col, region_value, metric_col)
-
-    cy_r = df_cy[df_cy[region_col] == region_value]
-    py_r = df_py[df_py[region_col] == region_value]
-
-    agg = _filter_non_skippable(_compute_aggregates(cy_r, py_r, [group_col], metric_col))
-    if agg.empty:
-        return f"{label} - No meaningful movement in {region_value}."
-
-    tops = agg.sort_values("Change", ascending=False).head(n)
-    bottoms = agg.sort_values("Change", ascending=True).head(n)
-
-    if region_sign > 0:
-        verb = "growth was led by"
-        main_set = tops
-        offset_set = bottoms
-    elif region_sign < 0:
-        verb = "contraction was led by"
-        main_set = bottoms
-        offset_set = tops
-    else:
-        verb = "movement was led by"
-        main_set = tops
-        offset_set = bottoms
-
-    main_text = _join_items(main_set, group_col, metric_col)
-    offset_text = _join_items(offset_set, group_col, metric_col)
-
-    # NEW RULE: offset only if any bottom contributor has negative change
-    any_negative = (offset_set["Change"] < 0).any()
-
-    if any_negative and offset_text:
-        return (
-            f"{label} - In the {region_value} region, {verb} {main_text}. "
-            f"Partially offset by {offset_text}."
-        )
-    else:
-        return f"{label} - In the {region_value} region, {verb} {main_text}."
+res = compare_mg_inscope_mastergroup_strict(
+    mg_p=mg_prior_df,
+    mg_c=mg_current_df,
+    cust_gbm_p=cust_gbm_prior_df,
+    cust_cmb_p=cust_cmb_prior_df,
+    cust_gbm_c=cust_gbm_current_df,
+    cust_cmb_c=cust_cmb_current_df,
+    inscope_col_mg=['Mastergroup ID', 'Mastergroup name', 'SomeOtherInScopeCol']  # example
+)
+print("Wrote:", res['out_file'])
+res['additions'].head()
 
 
-# ============================================================
-# MARKETS DRILLDOWN WITH INLINE BIZLINE + NEGATIVE RULE
-# ============================================================
 
-def markets_with_biz_inline(df_cy, df_py, region_col, region_value,
-                            country_col, biz_col, metric_col, top_n=2):
 
-    summary, region_sign = summary_line(df_cy, df_py, region_col, region_value, metric_col)
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from io import BytesIO
 
-    cy_r = df_cy[df_cy[region_col] == region_value]
-    py_r = df_py[df_py[region_col] == region_value]
+st.set_page_config(page_title="MG Exception Storytelling", layout="wide")
 
-    country_agg = _filter_non_skippable(
-        _compute_aggregates(cy_r, py_r, [country_col], metric_col)
+# ---------------------------------------------------------
+# UTILITY FUNCTIONS
+# ---------------------------------------------------------
+
+def kpi_card(label, value, color="#2266cc"):
+    st.markdown(
+        f"""
+        <div style="padding:15px;border-radius:10px;background:{color}20;border-left:6px solid {color};margin-bottom:10px">
+            <h4 style="margin:0;color:{color}">{label}</h4>
+            <h2 style="margin:0;color:#000">{value}</h2>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-    if country_agg.empty:
-        return f"Markets - No meaningful movement in {region_value}."
+def download_excel(df, filename="data.xlsx"):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
-    tops = country_agg.sort_values("Change", ascending=False).head(top_n)
-    bottoms = country_agg.sort_values("Change", ascending=True).head(top_n)
+def waterfall_chart(added, deleted, final):
+    fig = go.Figure(go.Waterfall(
+        name="Revenue Movement",
+        orientation="v",
+        measure=["relative", "relative", "total"],
+        x=["Additions", "Deletions", "Net Change"],
+        y=[added, -deleted, final],
+        connector={"line": {"color": "grey"}}
+    ))
+    fig.update_layout(title="Revenue Waterfall", height=350)
+    return fig
 
-    # determine verb direction
-    if region_sign > 0:
-        verb = "growth was led by"
-        main_set, offset_set = tops, bottoms
-    elif region_sign < 0:
-        verb = "contraction was led by"
-        main_set, offset_set = bottoms, tops
-    else:
-        verb = "movement was led by"
-        main_set, offset_set = tops, bottoms
+# ---------------------------------------------------------
+# TITLE
+# ---------------------------------------------------------
 
-    def describe_country(row):
-        country = row[country_col]
-        country_txt = f"{country} ({_fmt_change_yoy_scaled(row['Change'], row['YoY%'], metric_col)})"
+st.title("📊 MG Exceptions — Storytelling Dashboard")
+st.markdown("Upload your Additions, Deletions & Changes outputs to visualize the revenue story.")
 
-        # now find bizline top/bottom within country
-        cy_c = cy_r[cy_r[country_col] == country]
-        py_c = py_r[py_r[country_col] == country]
+# ---------------------------------------------------------
+# FILE UPLOAD SECTION
+# ---------------------------------------------------------
 
-        biz_agg = _filter_non_skippable(
-            _compute_aggregates(cy_c, py_c, [biz_col], metric_col)
-        )
+st.header("📁 Upload MG Exception Outputs")
 
-        if biz_agg.empty:
-            return country_txt
+add_file = st.file_uploader("Upload Additions Excel", type=["xlsx"])
+del_file = st.file_uploader("Upload Deletions Excel", type=["xlsx"])
+chg_file = st.file_uploader("Upload Changes Excel", type=["xlsx"])
 
-        # choose biz contributor depending on country sign
-        if row["Change"] > 0:
-            chosen = biz_agg.sort_values("Change", ascending=False).head(1)
-        else:
-            chosen = biz_agg.sort_values("Change", ascending=True).head(1)
+if add_file and del_file:
+    additions = pd.read_excel(add_file)
+    deletions = pd.read_excel(del_file)
+    changes = pd.read_excel(chg_file) if chg_file else pd.DataFrame()
 
-        biz_part = _join_items(chosen, biz_col, metric_col)
-        return f"{country_txt} driven by {biz_part}"
+    st.success("Files loaded successfully!")
 
-    # build main side
-    main_parts = [describe_country(r) for _, r in main_set.iterrows()]
-    main_text = " and ".join(main_parts) if len(main_parts) == 2 else ", ".join(main_parts)
+    # Mastergroup + Revenue should exist
+    master_col = "Mastergroup name"
+    fin_col = "Total Operating Income (HORIS YTD Financials)"
 
-    # build offset side
-    offset_parts = [describe_country(r) for _, r in offset_set.iterrows()]
-    offset_text = " and ".join(offset_parts) if len(offset_parts) == 2 else ", ".join(offset_parts)
+    # ---------------------------------------------------------
+    # FEATURE SELECTION
+    # ---------------------------------------------------------
+    st.header("🎛 Select up to 2 features for storytelling")
 
-    # NEW RULE OPTION 1:
-    # offset shown if ANY bottom country OR chosen biz contributor is negative
-    bottom_country_negative = (offset_set["Change"] < 0).any()
+    feature_candidates = [c for c in additions.columns if c not in [master_col, fin_col] and additions[c].nunique() < 30]
+    selected_features = st.multiselect("Choose features", feature_candidates, max_selections=2)
 
-    # bizline negative logic:
-    biz_negative = False
-    for _, r in offset_set.iterrows():
-        country = r[country_col]
-        cy_c = cy_r[cy_r[country_col] == country]
-        py_c = py_r[py_r[country_col] == country]
-        biz_agg = _filter_non_skippable(_compute_aggregates(cy_c, py_c, [biz_col], metric_col))
-        if biz_agg.empty:
-            continue
-        if r["Change"] > 0:
-            chosen = biz_agg.sort_values("Change", ascending=False).head(1)
-        else:
-            chosen = biz_agg.sort_values("Change", ascending=True).head(1)
-        if (chosen["Change"] < 0).any():
-            biz_negative = True
+    if selected_features:
+        st.info(f"Storytelling based on: **{', '.join(selected_features)}**")
 
-    show_offset = bottom_country_negative or biz_negative
+        # ---------------------------------------------------------
+        # FILTERED DATA
+        # ---------------------------------------------------------
+        df_add = additions[[master_col, fin_col] + selected_features].copy()
+        df_del = deletions[[master_col, fin_col] + selected_features].copy()
 
-    if show_offset and offset_text:
-        return (
-            f"Markets - In the {region_value} region, {verb} {main_text}, "
-            f"partially offset by {offset_text}."
-        )
-    else:
-        return f"Markets - In the {region_value} region, {verb} {main_text}."
+        revenue_added = df_add[fin_col].sum()
+        revenue_deleted = df_del[fin_col].sum()
+        net_change = revenue_added - revenue_deleted
+
+        # ---------------------------------------------------------
+        # KPI SECTION
+        # ---------------------------------------------------------
+        st.header("📌 Key Portfolio Metrics")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1: kpi_card("Total Additions", len(df_add))
+        with col2: kpi_card("Revenue Added", f"₹{revenue_added:,.2f}")
+        with col3: kpi_card("Total Deletions", len(df_del), color="#cc2222")
+        with col4: kpi_card("Revenue Lost", f"₹{revenue_deleted:,.2f}", color="#cc2222")
+
+        st.subheader("Net Impact")
+        kpi_card("Net Revenue Change", f"₹{net_change:,.2f}", "#0a8a0a")
+
+        # ---------------------------------------------------------
+        # STORY NARRATIVE SECTION
+        # ---------------------------------------------------------
+        st.header("📝 Executive Summary Story")
+
+        feature_text = " & ".join(selected_features) if len(selected_features) == 2 else selected_features[0]
+
+        story = f"""
+### **📌 Portfolio Revenue Story — Based on {feature_text}**
+
+**1. Additions increased revenue by ₹{revenue_added:,.2f}.**  
+These accounts entered the portfolio this month and strengthened the revenue base.  
+The largest positive contributors were from the **top-performing clusters** based on {feature_text}.
+
+**2. Deletions decreased revenue by ₹{revenue_deleted:,.2f}.**  
+These accounts exited or became inactive. Several deletions appear in segments  
+with lower engagement or migration to competitors.
+
+**3. Net Revenue Change is ₹{net_change:,.2f}.**  
+Overall, the portfolio shows a **{'positive' if net_change>0 else 'negative'} uplift**,  
+highlighting the importance of sustaining high-value additions and re-engaging  
+key accounts at risk.
+
+"""
+
+        st.markdown(story)
+
+        # ---------------------------------------------------------
+        # CHARTS SECTION
+        # ---------------------------------------------------------
+        st.header("📈 Visual Analysis")
+
+        colA, colB = st.columns(2)
+
+        with colA:
+            st.subheader("Additions — Revenue Contribution")
+            fig_add = px.bar(df_add.sort_values(fin_col, ascending=False).head(20),
+                             x=master_col, y=fin_col, title="Top Additions")
+            st.plotly_chart(fig_add, use_container_width=True)
+
+        with colB:
+            st.subheader("Deletions — Revenue Loss")
+            fig_del = px.bar(df_del.sort_values(fin_col, ascending=False).head(20),
+                             x=master_col, y=fin_col, title="Top Deletions")
+            st.plotly_chart(fig_del, use_container_width=True)
+
+        st.subheader("Revenue Waterfall")
+        fig_water = waterfall_chart(revenue_added, revenue_deleted, net_change)
+        st.plotly_chart(fig_water, use_container_width=True)
+
+        # ---------------------------------------------------------
+        # TABLE SECTION WITH TABS
+        # ---------------------------------------------------------
+        st.header("📋 Detailed Data")
+
+        tab1, tab2, tab3 = st.tabs(["Additions", "Deletions", "Changes"])
+
+        with tab1:
+            st.dataframe(df_add)
+            st.download_button("⬇ Download Additions", 
+                               data=download_excel(df_add),
+                               file_name="additions_filtered.xlsx")
+
+        with tab2:
+            st.dataframe(df_del)
+            st.download_button("⬇ Download Deletions", 
+                               data=download_excel(df_del),
+                               file_name="deletions_filtered.xlsx")
+
+        with tab3:
+            if not changes.empty:
+                st.dataframe(changes)
+                st.download_button("⬇ Download Changes", 
+                                   data=download_excel(changes),
+                                   file_name="changes.xlsx")
+            else:
+                st.info("No changes file uploaded.")
+
+        # ---------------------------------------------------------
+        # ACTION BUTTONS
+        # ---------------------------------------------------------
+        st.header("⚙ Actions")
+
+        colx1, colx2, colx3 = st.columns(3)
+
+        with colx1:
+            st.button("🔁 Refresh Story")
+
+        with colx2:
+            st.button("📤 Export Story as PDF (Coming Soon)")
+
+        with colx3:
+            st.button("📈 Compare with Last 6 Months (Future Feature)")
+
+else:
+    st.info("Upload at least Additions and Deletions to continue.")
 
 
-# ============================================================
-# REGION COMMENTARY
-# ============================================================
-
-def region_commentary(df_cy, df_py, region_col, region_value, metric_col,
-                      segment_col="CIB Segment", market_col="Managed country",
-                      biz_col="Business Line", top_n=2):
-
-    summary, _ = summary_line(df_cy, df_py, region_col, region_value, metric_col)
-
-    segments = drilldown_with_offsets(
-        df_cy, df_py, region_col, region_value, segment_col, metric_col, top_n, "Segments"
-    )
-
-    markets = markets_with_biz_inline(
-        df_cy, df_py, region_col, region_value, market_col, biz_col, metric_col, top_n
-    )
-
-    bizlines = drilldown_with_offsets(
-        df_cy, df_py, region_col, region_value, biz_col, metric_col, top_n, "Business Lines"
-    )
-
-    return "\n".join([summary, segments, markets, bizlines])
 
 
-# ============================================================
-# ALL REGIONS COMMENTARY
-# ============================================================
 
-def all_regions_commentary(df_cy, df_py, region_col, metric_col,
-                           segment_col="CIB Segment", market_col="Managed country",
-                           biz_col="Business Line", top_n=2,
-                           return_type="dict"):
 
-    regions = pd.Index(df_cy[region_col].dropna().unique()).union(
-              pd.Index(df_py[region_col].dropna().unique()))
-
-    out = {}
-    for region in regions:
-        out[region] = region_commentary(
-            df_cy, df_py, region_col, region, metric_col,
-            segment_col, market_col, biz_col, top_n
-        )
-
-    if return_type == "df":
-        df_out = []
-        for region, txt in out.items():
-            lines = txt.split("\n")
-            df_out.append({
-                region_col: region,
-                "summary": lines[0],
-                "segments": lines[1],
-                "markets": lines[2],
-                "business_lines": lines[3],
-                "full": txt
-            })
-        return pd.DataFrame(df_out)
-
-    return out
