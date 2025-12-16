@@ -1,61 +1,21 @@
-```
-from docx import Document
-from docx.shared import RGBColor
 import re
 
-def write_commentary_to_word_colored(commentary_dict, output_file):
-    """
-    Writes region-wise commentary to a Word file.
-    - Positive numbers AND percentages -> Green
-    - Negative numbers AND percentages -> Red
-    """
+EXCEPTIONS = {"ab", "aps", "ats", "amg"}
 
-    doc = Document()
-    doc.add_heading("Total Relationship Income Commentary", level=1)
+def proper_case_except(text, exceptions=EXCEPTIONS):
+    if not isinstance(text, str):
+        return text
 
-    # Match:
-    # +120mn
-    # +120mn / 8.4%
-    # -45mn
-    # -45mn / -6.2%
-    pattern = re.compile(
-        r"(\+[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)|"
-        r"(\-[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)"
-    )
+    def fix_word(word):
+        lw = word.lower()
+        if lw in exceptions:
+            return lw  # keep exactly lowercase
+        return word.capitalize()
 
-    for region, text in commentary_dict.items():
-        doc.add_heading(region, level=2)
+    # Split while keeping punctuation
+    tokens = re.findall(r"[A-Za-z]+|[^A-Za-z]+", text)
+    return "".join(fix_word(tok) if tok.isalpha() else tok for tok in tokens)
 
-        for line in text.split("\n"):
-            p = doc.add_paragraph()
-            idx = 0
-            matches = list(pattern.finditer(line))
 
-            if not matches:
-                p.add_run(line)
-                continue
 
-            for m in matches:
-                start, end = m.span()
-
-                # Normal text before match
-                if start > idx:
-                    p.add_run(line[idx:start])
-
-                token = line[start:end]
-                run = p.add_run(token)
-
-                # Color logic based on sign of first char
-                if token.strip().startswith("+"):
-                    run.font.color.rgb = RGBColor(0, 176, 80)   # Green
-                else:
-                    run.font.color.rgb = RGBColor(192, 0, 0)   # Red
-
-                idx = end
-
-            # Remaining text
-            if idx < len(line):
-                p.add_run(line[idx:])
-
-    doc.save(output_file)
-    print(f"Word commentary written to {output_file}")
+    df["commentary"] = df["commentary"].apply(proper_case_except)
