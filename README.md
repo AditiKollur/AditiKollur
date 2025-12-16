@@ -6,28 +6,29 @@ import re
 def write_commentary_to_word_colored(
     commentary_dict,
     output_file,
-    country_names
+    country_names,
+    bizline_names
 ):
     """
-    Word output rules:
+    Word formatting rules:
     - Side headers -> BOLD
-    - Country names -> BOLD (EXCEPT 'ats')
+    - Country names -> BOLD (except 'ats')
+    - Business line names -> BOLD
     - Positive numbers & % -> GREEN
     - Negative numbers & % -> RED
     """
 
-    # -------- REMOVE ats FROM COUNTRY BOLDING --------
-    country_names = [
-        c for c in country_names
-        if c.lower() != "ats"
-    ]
+    # ---- Exclusions ----
+    country_names = [c for c in country_names if c.lower() != "ats"]
 
     # Sort longest first to avoid partial matches
     country_names = sorted(country_names, key=len, reverse=True)
+    bizline_names = sorted(bizline_names, key=len, reverse=True)
 
     doc = Document()
     doc.add_heading("Total Relationship Income Commentary", level=1)
 
+    # Numbers with optional YoY %
     num_pattern = re.compile(
         r"(\+[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)|"
         r"(\-[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)"
@@ -52,20 +53,27 @@ def write_commentary_to_word_colored(
             i = 0
             while i < len(line):
 
-                # ---- Country bolding (except ats) ----
-                matched_country = None
+                # ---- Country bolding ----
+                matched = None
                 for c in country_names:
                     if line[i:i+len(c)] == c:
-                        matched_country = c
+                        matched = ("country", c)
                         break
 
-                if matched_country:
-                    run = p.add_run(matched_country)
+                # ---- Business line bolding ----
+                if not matched:
+                    for b in bizline_names:
+                        if line[i:i+len(b)] == b:
+                            matched = ("biz", b)
+                            break
+
+                if matched:
+                    run = p.add_run(matched[1])
                     run.bold = True
-                    i += len(matched_country)
+                    i += len(matched[1])
                     continue
 
-                # ---- Numbers + percentages coloring ----
+                # ---- Numbers coloring ----
                 m = num_pattern.match(line, i)
                 if m:
                     token = m.group()
@@ -83,4 +91,24 @@ def write_commentary_to_word_colored(
 
     doc.save(output_file)
     print(f"Word commentary written to {output_file}")
+
+
+country_list = sorted(
+    set(df_cy["Managed country"].dropna().unique())
+    | set(df_py["Managed country"].dropna().unique())
+)
+
+bizline_list = sorted(
+    set(df_cy["Business Line"].dropna().unique())
+    | set(df_py["Business Line"].dropna().unique())
+)
+
+write_commentary_to_word_colored(
+    commentary_dict=commentary,
+    output_file="TRI_Commentary_Final.docx",
+    country_names=country_list,
+    bizline_names=bizline_list
+)
+
+
 
