@@ -1,189 +1,83 @@
 ```
-import pandas as pd
-import numpy as np
+def all_regions_commentary(
+    df_cy,
+    df_py,
+    region_col,
+    metric_col,
+    segment_col,
+    country_col,
+    biz_col,
+    return_type="dict"
+):
+    """
+    Generates commentary for ALL regions in region_col.
 
-# ============================================================
-# UNIT & FORMATTING HELPERS
-# ============================================================
+    return_type:
+        - "dict" → {region: commentary_text}
+        - "df"   → pandas DataFrame (one row per region)
+    """
 
-def _detect_unit(metric_col: str):
-    text = metric_col.upper()
-    if "$M" in text:
-        return "M"
-    if "$K" in text:
-        return "K"
-    return None
-
-def _to_mn(value, unit):
-    if pd.isna(value):
-        return value
-    return value / 1000 if unit == "K" else value
-
-def _fmt_mn_bn(mn):
-    if pd.isna(mn):
-        return "N/A"
-    sign = "+" if mn > 0 else "-" if mn < 0 else ""
-    mn = abs(mn)
-    if mn >= 1000:
-        return f"{sign}{mn/1000:.1f}bn"
-    return f"{sign}{mn:.0f}mn"
-
-def _fmt_change_yoy(change, yoy, metric_col):
-    unit = _detect_unit(metric_col)
-    mn = _to_mn(change, unit)
-    ch = _fmt_mn_bn(mn)
-    return f"{ch} / {yoy:.1f}%" if not pd.isna(yoy) else f"{ch} / N/A"
-
-
-# ============================================================
-# AGGREGATION & FILTERING
-# ============================================================
-
-def _compute_agg(df_cy, df_py, group_cols, metric_col):
-    cy = df_cy.groupby(group_cols)[metric_col].sum().reset_index(name="CY")
-    py = df_py.groupby(group_cols)[metric_col].sum().reset_index(name="PY")
-    m = cy.merge(py, on=group_cols, how="left").fillna(0)
-    m["Change"] = m["CY"] - m["PY"]
-    m["YoY%"] = np.where(m["PY"] != 0, m["Change"] / m["PY"] * 100, np.nan)
-    return m
-
-def _skip_noise(df):
-    return df[
-        ~((df["Change"] == 0) & ((df["YoY%"] == 0) | (df["YoY%"].isna())))
-    ]
-
-def select_by_coverage(df, metric_col, pct=0.9, min_mn=5):
-    if df.empty:
-        return df
-
-    unit = _detect_unit(metric_col)
-    df = df.copy()
-    df["abs_mn"] = df["Change"].abs().apply(lambda x: _to_mn(x, unit))
-    df = df[df["abs_mn"] >= min_mn]
-
-    total = df["abs_mn"].sum()
-    cutoff = total * pct
-
-    sel, run = [], 0
-    for _, r in df.iterrows():
-        sel.append(r)
-        run += r["abs_mn"]
-        if run >= cutoff:
-            break
-
-    return pd.DataFrame(sel).drop(columns="abs_mn")
-
-def _join(df, name_col, metric_col):
-    return " and ".join(
-        f"{r[name_col]} ({_fmt_change_yoy(r['Change'], r['YoY%'], metric_col)})"
-        for _, r in df.iterrows()
+    regions = (
+        pd.Index(df_cy[region_col].dropna().unique())
+        .union(pd.Index(df_py[region_col].dropna().unique()))
+        .sort_values()
     )
 
+    output = {}
 
-# ============================================================
-# SUMMARY
-# ============================================================
-
-def summary_line(df_cy, df_py, region_col, region, metric_col):
-    cy = df_cy[df_cy[region_col] == region][metric_col].sum()
-    py = df_py[df_py[region_col] == region][metric_col].sum()
-    change = cy - py
-    yoy = (change / py * 100) if py != 0 else np.nan
-    unit = _detect_unit(metric_col)
-    total = _fmt_mn_bn(_to_mn(cy, unit))
-    return f"Managed Total Relationship income of {region} of {total}, {_fmt_change_yoy(change, yoy, metric_col)}"
-
-
-# ============================================================
-# SEGMENTS / BUSINESS LINE DRILLDOWN
-# ============================================================
-
-def drilldown_coverage(df_cy, df_py, region_col, region,
-                       group_col, metric_col, label):
-
-    agg = _skip_noise(
-        _compute_agg(
-            df_cy[df_cy[region_col] == region],
-            df_py[df_py[region_col] == region],
-            [group_col], metric_col
-        )
-    )
-
-    pos = agg[agg["Change"] > 0].sort_values("Change", ascending=False)
-    neg = agg[agg["Change"] < 0].sort_values("Change")
-
-    top = select_by_coverage(pos, metric_col)
-    bottom = select_by_coverage(neg, metric_col)
-
-    text = f"{label} - In the {region} region, growth was led by {_join(top, group_col, metric_col)}"
-
-    if not bottom.empty:
-        text += f". Partially offset by {_join(bottom, group_col, metric_col)}."
-
-    return text
-
-
-# ============================================================
-# MARKETS WITH INLINE BUSINESS LINE
-# ============================================================
-
-def markets_with_biz(df_cy, df_py, region_col, region,
-                     country_col, biz_col, metric_col):
-
-    agg = _skip_noise(
-        _compute_agg(
-            df_cy[df_cy[region_col] == region],
-            df_py[df_py[region_col] == region],
-            [country_col], metric_col
-        )
-    )
-
-    pos = agg[agg["Change"] > 0].sort_values("Change", ascending=False)
-    neg = agg[agg["Change"] < 0].sort_values("Change")
-
-    top = select_by_coverage(pos, metric_col)
-    bottom = select_by_coverage(neg, metric_col)
-
-    def describe_country(row):
-        country = row[country_col]
-        biz_agg = _skip_noise(
-            _compute_agg(
-                df_cy[(df_cy[region_col] == region) & (df_cy[country_col] == country)],
-                df_py[(df_py[region_col] == region) & (df_py[country_col] == country)],
-                [biz_col], metric_col
-            )
+    for region in regions:
+        output[region] = region_commentary(
+            df_cy=df_cy,
+            df_py=df_py,
+            region_col=region_col,
+            region=region,
+            metric_col=metric_col,
+            segment_col=segment_col,
+            country_col=country_col,
+            biz_col=biz_col
         )
 
-        if row["Change"] > 0:
-            biz = select_by_coverage(biz_agg[biz_agg["Change"] > 0].sort_values("Change", ascending=False), metric_col)
-        else:
-            biz = select_by_coverage(biz_agg[biz_agg["Change"] < 0].sort_values("Change"), metric_col)
+    if return_type == "df":
+        rows = []
+        for region, text in output.items():
+            lines = text.split("\n")
+            rows.append({
+                region_col: region,
+                "Summary": lines[0] if len(lines) > 0 else "",
+                "Segments": lines[1] if len(lines) > 1 else "",
+                "Markets": lines[2] if len(lines) > 2 else "",
+                "Business Lines": lines[3] if len(lines) > 3 else "",
+                "Full Commentary": text
+            })
+        return pd.DataFrame(rows)
 
-        base = f"{country} ({_fmt_change_yoy(row['Change'], row['YoY%'], metric_col)})"
-        return f"{base} driven by {_join(biz, biz_col, metric_col)}" if not biz.empty else base
+    return output
+all_out = all_regions_commentary(
+    df_cy=df_cy,
+    df_py=df_py,
+    region_col="Managed Region",
+    metric_col="Total Relationship Income ($M)",
+    segment_col="CIB Segment",
+    country_col="Managed country",
+    biz_col="Business Line",
+    return_type="dict"
+)
 
-    main = " and ".join(describe_country(r) for _, r in top.iterrows())
-
-    text = f"Markets - In the {region} region, growth was led by {main}"
-
-    if not bottom.empty:
-        offset = " and ".join(describe_country(r) for _, r in bottom.iterrows())
-        text += f", partially offset by {offset}."
-
-    return text
+for region, text in all_out.items():
+    print(f"\n===== REGION: {region} =====\n")
+    print(text)
 
 
-# ============================================================
-# REGION COMMENTARY
-# ============================================================
+df_out = all_regions_commentary(
+    df_cy=df_cy,
+    df_py=df_py,
+    region_col="Managed Region",
+    metric_col="Total Relationship Income ($M)",
+    segment_col="CIB Segment",
+    country_col="Managed country",
+    biz_col="Business Line",
+    return_type="df"
+)
 
-def region_commentary(df_cy, df_py, region_col, region, metric_col,
-                      segment_col, country_col, biz_col):
-
-    return "\n".join([
-        summary_line(df_cy, df_py, region_col, region, metric_col),
-        drilldown_coverage(df_cy, df_py, region_col, region, segment_col, metric_col, "Segments"),
-        markets_with_biz(df_cy, df_py, region_col, region, country_col, biz_col, metric_col),
-        drilldown_coverage(df_cy, df_py, region_col, region, biz_col, metric_col, "Business Lines")
-    ])
+df_out
 
