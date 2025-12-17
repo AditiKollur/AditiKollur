@@ -1,135 +1,148 @@
 ```
-from docx import Document
-from docx.shared import RGBColor
-import re
-
-def write_commentary_to_word_colored(
-    commentary_dict,
-    output_file,
-    country_names,
-    bizline_names,
-    product_names
+def global_commentary(
+    df_cy,
+    df_py,
+    metric_col,
+    segment_col,
+    region_col,
+    country_col,
+    biz_col,
+    product_col,
+    top_n=2
 ):
     """
-    Word formatting rules:
-    - Side headers -> BOLD
-    - Country names -> BOLD (Markets only, except 'ats')
-    - Business Line names -> BOLD ONLY in Business Lines section
-    - Products section:
-        * If product = "<BizLine> - <Product>", bold ONLY <Product>
-        * Do NOT bold BizLine prefix
-    - Positive numbers & % -> GREEN
-    - Negative numbers & % -> RED
+    Global-level commentary (all regions combined)
+    Mirrors Segments / Markets / Business Lines / Products logic
     """
 
-    # ---- exclusions ----
-    country_names = [c for c in country_names if c.lower() != "ats"]
+    lines = []
 
-    country_names = sorted(country_names, key=len, reverse=True)
-    bizline_names = sorted(bizline_names, key=len, reverse=True)
-    product_names = sorted(product_names, key=len, reverse=True)
+    # ======================================================
+    # 1. GLOBAL SUMMARY
+    # ======================================================
+    total_cy = df_cy[metric_col].sum()
+    total_py = df_py[metric_col].sum()
+    change = total_cy - total_py
+    yoy = (change / total_py * 100) if total_py != 0 else None
 
-    num_pattern = re.compile(
-        r"(\+[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)|"
-        r"(\-[0-9]+(\.[0-9]+)?(mn|bn)(\s*/\s*-?[0-9]+(\.[0-9]+)?%)?)"
+    lines.append(
+        f"Managed Total Relationship income globally of "
+        f"{fmt_mn_bn(to_mn(total_cy, detect_unit(metric_col)))}, "
+        f"{fmt_change_yoy(change, yoy, metric_col)}"
     )
 
-    headers = ["Segments -", "Markets -", "Business Lines -", "Products -"]
+    # ======================================================
+    # 2. SEGMENTS (GLOBAL)
+    # ======================================================
+    seg_agg = drop_noise(
+        compute_agg(df_cy, df_py, [segment_col], metric_col)
+    )
 
-    doc = Document()
-    doc.add_heading("Total Relationship Income Commentary", level=1)
+    pos = seg_agg[seg_agg["Change"] > 0].sort_values("Change", ascending=False).head(top_n)
+    neg = seg_agg[seg_agg["Change"] < 0].sort_values("Change").head(top_n)
 
-    for region, text in commentary_dict.items():
-        doc.add_heading(region, level=2)
-        current_section = None
+    seg_text = (
+        f"Segments - Globally, growth was led by "
+        f"{join_items(pos, segment_col, metric_col)}"
+    )
+    if not neg.empty:
+        seg_text += f". Partially offset by {join_items(neg, segment_col, metric_col)}."
 
-        for line in text.split("\n"):
-            p = doc.add_paragraph()
+    lines.append(seg_text)
 
-            # ---- section detection + header bold ----
-            for h in headers:
-                if line.startswith(h):
-                    run = p.add_run(h)
-                    run.bold = True
-                    line = line[len(h):]
-                    current_section = h.replace(" -", "")
-                    break
+    # ======================================================
+    # 3. MARKETS (GLOBAL = REGIONS)
+    # ======================================================
+    reg_agg = drop_noise(
+        compute_agg(df_cy, df_py, [region_col], metric_col)
+    )
 
-            i = 0
-            while i < len(line):
+    pos_r = reg_agg[reg_agg["Change"] > 0].sort_values("Change", ascending=False).head(top_n)
+    neg_r = reg_agg[reg_agg["Change"] < 0].sort_values("Change").head(top_n)
 
-                # ---- country bolding (Markets only) ----
-                if current_section == "Markets":
-                    for c in country_names:
-                        if line[i:i+len(c)] == c:
-                            run = p.add_run(c)
-                            run.bold = True
-                            i += len(c)
-                            break
-                    else:
-                        pass
-                    if i < len(line) and line[i-1:i] == c:
-                        continue
+    def describe_region(r):
+        region = r[region_col]
+        base = f"{region} ({fmt_change_yoy(r['Change'], r['YoY%'], metric_col)})"
 
-                # ---- business line bolding (Business Lines only) ----
-                if current_section == "Business Lines":
-                    for b in bizline_names:
-                        if line[i:i+len(b)] == b:
-                            run = p.add_run(b)
-                            run.bold = True
-                            i += len(b)
-                            break
-                    else:
-                        pass
-                    if i < len(line) and line[i-1:i] == b:
-                        continue
+        c_agg = drop_noise(
+            compute_agg(
+                df_cy[df_cy[region_col] == region],
+                df_py[df_py[region_col] == region],
+                [country_col],
+                metric_col
+            )
+        )
 
-                # ---- product bolding (Products only, suffix only) ----
-                if current_section == "Products":
-                    for pdt in product_names:
-                        if line[i:i+len(pdt)] == pdt:
-                            # check if product has bizline prefix
-                            matched_prefix = None
-                            for b in bizline_names:
-                                prefix = f"{b} - "
-                                if pdt.startswith(prefix):
-                                    matched_prefix = prefix
-                                    break
+        if r["Change"] > 0:
+            c_sel = c_agg[c_agg["Change"] > 0].sort_values("Change", ascending=False).head(top_n)
+        else:
+            c_sel = c_agg[c_agg["Change"] < 0].sort_values("Change").head(top_n)
 
-                            if matched_prefix:
-                                # write prefix as normal
-                                p.add_run(matched_prefix)
-                                # bold only suffix
-                                suffix = pdt[len(matched_prefix):]
-                                run = p.add_run(suffix)
-                                run.bold = True
-                            else:
-                                run = p.add_run(pdt)
-                                run.bold = True
+        return f"{base} driven by {join_items(c_sel, country_col, metric_col)}" if not c_sel.empty else base
 
-                            i += len(pdt)
-                            break
-                    else:
-                        pass
-                    if i < len(line) and line[i-1:i] == pdt:
-                        continue
+    main_regs = " and ".join(describe_region(r) for _, r in pos_r.iterrows())
 
-                # ---- numbers coloring ----
-                m = num_pattern.match(line, i)
-                if m:
-                    token = m.group()
-                    run = p.add_run(token)
-                    run.font.color.rgb = (
-                        RGBColor(0, 176, 80)
-                        if token.startswith("+")
-                        else RGBColor(192, 0, 0)
-                    )
-                    i += len(token)
-                    continue
+    markets_text = (
+        f"Markets - Globally, growth was led by {main_regs}"
+    )
 
-                # ---- default ----
-                p.add_run(line[i])
-                i += 1
+    if not neg_r.empty:
+        offset_regs = " and ".join(describe_region(r) for _, r in neg_r.iterrows())
+        markets_text += f", partially offset by {offset_regs}."
 
-    doc.save(output_file)
-    print(f"Word commentary written to {output_file}")
+    lines.append(markets_text)
+
+    # ======================================================
+    # 4. BUSINESS LINES (GLOBAL)
+    # ======================================================
+    biz_agg = drop_noise(
+        compute_agg(df_cy, df_py, [biz_col], metric_col)
+    )
+
+    pos_b = biz_agg[biz_agg["Change"] > 0].sort_values("Change", ascending=False).head(top_n)
+    neg_b = biz_agg[biz_agg["Change"] < 0].sort_values("Change").head(top_n)
+
+    biz_text = (
+        f"Business Lines - Globally, growth was led by "
+        f"{join_items(pos_b, biz_col, metric_col)}"
+    )
+    if not neg_b.empty:
+        biz_text += f". Partially offset by {join_items(neg_b, biz_col, metric_col)}."
+
+    lines.append(biz_text)
+
+    # ======================================================
+    # 5. PRODUCTS (GLOBAL)
+    # ======================================================
+    prod_agg = drop_noise(
+        compute_agg(df_cy, df_py, [product_col], metric_col)
+    )
+
+    pos_p = prod_agg[prod_agg["Change"] > 0].sort_values("Change", ascending=False).head(top_n)
+    neg_p = prod_agg[prod_agg["Change"] < 0].sort_values("Change").head(top_n)
+
+    prod_text = (
+        f"Products - Globally, growth was led by "
+        f"{join_items(pos_p, product_col, metric_col)}"
+    )
+    if not neg_p.empty:
+        prod_text += f". Partially offset by {join_items(neg_p, product_col, metric_col)}."
+
+    lines.append(prod_text)
+
+    return "\n".join(lines)
+
+
+global_text = global_commentary(
+    df_cy,
+    df_py,
+    metric_col="Total Relationship Income ($M)",
+    segment_col="CIB Segment",
+    region_col="Managed Region",
+    country_col="Managed country",
+    biz_col="Business Line",
+    product_col="Product",
+    top_n=2
+)
+
+print(global_text)
