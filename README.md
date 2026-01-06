@@ -1,5 +1,6 @@
 ```
 from openpyxl import load_workbook
+from collections import defaultdict
 import shutil
 import os
 
@@ -34,10 +35,14 @@ bc_ws = fm_wb[BOOKING_COUNTRY_SHEET]
 bc_headers = {cell.value: idx + 1 for idx, cell in enumerate(bc_ws[1])}
 bc_col_idx = bc_headers["Booking Country"]
 
-booking_countries = set()
+booking_countries = []
+seen = set()
 for row in bc_ws.iter_rows(min_row=2, values_only=True):
     if row[bc_col_idx - 1]:
-        booking_countries.add(str(row[bc_col_idx - 1]).strip())
+        country = str(row[bc_col_idx - 1]).strip()
+        if country not in seen:
+            booking_countries.append(country)
+            seen.add(country)
 
 # ---------- STEP 2: READ FIELD FILL MAP ----------
 ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
@@ -46,10 +51,13 @@ ff_headers = {cell.value: idx + 1 for idx, cell in enumerate(ff_ws[1])}
 tm1_col = ff_headers["TM1"]
 field_name_col = ff_headers["Field name"]
 
-tm1_to_field = {}
+tm1_to_field = []
 for row in ff_ws.iter_rows(min_row=2, values_only=True):
     if row[tm1_col - 1] and row[field_name_col - 1]:
-        tm1_to_field[str(row[tm1_col - 1]).strip()] = str(row[field_name_col - 1]).strip()
+        tm1_to_field.append((
+            str(row[tm1_col - 1]).strip(),
+            str(row[field_name_col - 1]).strip()
+        ))
 
 # ---------- STEP 3: READ COST WALK SUMMARY ----------
 cw_wb = load_workbook(COST_WALK_PATH, data_only=True)
@@ -69,13 +77,6 @@ for row in range(DATA_START_ROW, cw_ws.max_row + 1):
     if country:
         country_rows.setdefault(str(country).strip(), []).append(row)
 
-# ---------- HELPER: MERGED CELL SAFE TARGET ----------
-def get_target_cell(ws, cell):
-    for m in ws.merged_cells.ranges:
-        if cell.coordinate in m:
-            return ws.cell(row=m.min_row, column=m.min_col + 1)
-    return ws.cell(row=cell.row, column=cell.column + 1)
-
 # ---------- STEP 4: CREATE TEMPLATES ----------
 for country in booking_countries:
     output_path = os.path.join(OUTPUT_DIR, f"{country}_template.xlsx")
@@ -90,20 +91,20 @@ for country in booking_countries:
     col_a_values = []
     for r in rows:
         val = cw_ws[f"{COL_A}{r}"].value
-        if val:
+        if val not in [None, ""]:
             col_a_values.append(str(val))
-
     tpl_ws[C4_CELL] = ", ".join(col_a_values)
 
-    # ---- 4B: Build Template text → cell map ----
-    template_text_cells = {}
-    for r in tpl_ws.iter_rows():
-        for cell in r:
-            if isinstance(cell.value, str):
-                template_text_cells[cell.value.strip()] = cell
+    # ---- 4B: Build Template text → ordered cell list (CRITICAL FIX) ----
+    template_text_cells = defaultdict(list)
 
-    # ---- 4C: TM1 → Field → Template Mapping (FIRST OCCURRENCE ONLY) ----
-    for tm1_header, field_name in tm1_to_field.items():
+    for row in tpl_ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                template_text_cells[cell.value.strip()].append(cell)
+
+    # ---- 4C: TM1 → Field → Template Mapping (FIRST MATCH ONLY) ----
+    for tm1_header, field_name in tm1_to_field:
         if tm1_header not in tm1_headers:
             continue
         if field_name not in template_text_cells:
@@ -113,7 +114,7 @@ for country in booking_countries:
 
         col_idx = tm1_headers[tm1_header]
 
-        # First NON-NULL value only
+        # First NON-NULL value from Cost Walk
         value = next(
             (
                 cw_ws.cell(r, col_idx).value
@@ -126,15 +127,19 @@ for country in booking_countries:
         if value is None:
             continue
 
-        field_cell = template_text_cells[field_name]
-        target_cell = get_target_cell(tpl_ws, field_cell)
+        # FIRST occurrence in Template
+        field_cell = template_text_cells[field_name][0]
 
-        # FIRST write wins
+        target_cell = tpl_ws.cell(
+            row=field_cell.row,
+            column=field_cell.column + 1
+        )
+
+        # Write only once
         if target_cell.value in [None, ""]:
             target_cell.value = value
 
-    tpl_wb.calculation_properties.fullCalcOnLoad = True
     tpl_wb.save(output_path)
 
-print("✅ All booking country templates created with first-occurrence-only substitution.")
+print("✅ Templates created. First text match populated correctly.")
 
