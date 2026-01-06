@@ -1,70 +1,119 @@
 ```
 from openpyxl import load_workbook
-from openpyxl import Workbook
 import shutil
 import os
 
-# ---------------- CONFIG ----------------
+# ================= CONFIG =================
 MASTER_TEMPLATE_PATH = "Master_Template.xlsx"
 FIELD_MAPPER_PATH = "Field_mapper.xlsx"
 COST_WALK_PATH = "Cost_walk_summary.xlsx"
 OUTPUT_DIR = "output_templates"
 
-FIELD_MAPPER_SHEET = "Booking Country"
-BOOKING_COUNTRY_COLUMN_HEADER = "Booking Country"
+# Field mapper sheets
+BOOKING_COUNTRY_SHEET = "Booking Country"
+FIELD_FILL_MAP_SHEET = "Field fill map"
 
-TEMPLATE_SHEET_NAME = "Template"
-TARGET_CELL = "C4"
+# Template
+TEMPLATE_SHEET = "Template"
+C4_CELL = "C4"
 
-COST_WALK_START_ROW = 28
-COST_WALK_VALUE_COL = "A"
-COST_WALK_COUNTRY_COL = "D"
-# ----------------------------------------
+# Cost walk
+COST_WALK_SHEET = "TM1"
+HEADER_ROW = 27
+DATA_START_ROW = 28
+BOOKING_COUNTRY_COL = "D"
+COL_A = "A"
+# =========================================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# -------- Step 1: Read Booking Countries --------
+# ---------- STEP 1: READ BOOKING COUNTRIES ----------
 fm_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
-fm_ws = fm_wb[FIELD_MAPPER_SHEET]
+bc_ws = fm_wb[BOOKING_COUNTRY_SHEET]
 
-headers = {cell.value: idx + 1 for idx, cell in enumerate(fm_ws[1])}
-country_col_idx = headers[BOOKING_COUNTRY_COLUMN_HEADER]
+bc_headers = {cell.value: idx + 1 for idx, cell in enumerate(bc_ws[1])}
+bc_col_idx = bc_headers["Booking Country"]
 
 booking_countries = set()
-for row in fm_ws.iter_rows(min_row=2, values_only=True):
-    if row[country_col_idx - 1]:
-        booking_countries.add(str(row[country_col_idx - 1]).strip())
+for row in bc_ws.iter_rows(min_row=2, values_only=True):
+    if row[bc_col_idx - 1]:
+        booking_countries.add(str(row[bc_col_idx - 1]).strip())
 
-# -------- Step 2: Read Cost Walk Summary --------
+# ---------- STEP 2: READ FIELD FILL MAP ----------
+ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
+ff_headers = {cell.value: idx + 1 for idx, cell in enumerate(ff_ws[1])}
+
+tm1_col = ff_headers["TM1"]
+field_name_col = ff_headers["Field name"]
+
+tm1_to_field = {}
+for row in ff_ws.iter_rows(min_row=2, values_only=True):
+    if row[tm1_col - 1] and row[field_name_col - 1]:
+        tm1_to_field[str(row[tm1_col - 1]).strip()] = str(row[field_name_col - 1]).strip()
+
+# ---------- STEP 3: READ COST WALK SUMMARY ----------
 cw_wb = load_workbook(COST_WALK_PATH, data_only=True)
-cw_ws = cw_wb.active
+cw_ws = cw_wb[COST_WALK_SHEET]
 
-country_to_values = {}
+# TM1 headers from row 27
+tm1_headers = {
+    cw_ws.cell(row=HEADER_ROW, column=col).value: col
+    for col in range(1, cw_ws.max_column + 1)
+    if cw_ws.cell(row=HEADER_ROW, column=col).value
+}
 
-for row in range(COST_WALK_START_ROW, cw_ws.max_row + 1):
-    country = cw_ws[f"{COST_WALK_COUNTRY_COL}{row}"].value
-    value = cw_ws[f"{COST_WALK_VALUE_COL}{row}"].value
-
+# Booking country → rows
+country_rows = {}
+for row in range(DATA_START_ROW, cw_ws.max_row + 1):
+    country = cw_ws[f"{BOOKING_COUNTRY_COL}{row}"].value
     if country:
-        country = str(country).strip()
-        country_to_values.setdefault(country, []).append(str(value))
+        country_rows.setdefault(str(country).strip(), []).append(row)
 
-# -------- Step 3: Create Templates --------
+# ---------- STEP 4: CREATE TEMPLATES ----------
 for country in booking_countries:
-    output_path = os.path.join(
-        OUTPUT_DIR, f"{country}_template.xlsx"
-    )
-
-    # Copy master template
+    output_path = os.path.join(OUTPUT_DIR, f"{country}_template.xlsx")
     shutil.copy(MASTER_TEMPLATE_PATH, output_path)
 
-    wb = load_workbook(output_path)
-    ws = wb[TEMPLATE_SHEET_NAME]
+    tpl_wb = load_workbook(output_path)
+    tpl_ws = tpl_wb[TEMPLATE_SHEET]
 
-    values = country_to_values.get(country, [])
-    ws[TARGET_CELL] = ", ".join(values) if values else ""
+    rows = country_rows.get(country, [])
 
-    wb.save(output_path)
+    # ---- 4A: Fill C4 with Column A values ----
+    col_a_values = []
+    for r in rows:
+        val = cw_ws[f"{COL_A}{r}"].value
+        if val:
+            col_a_values.append(str(val))
 
-print("✅ Templates created successfully.")
+    tpl_ws[C4_CELL] = ", ".join(col_a_values)
+
+    # ---- 4B: Build Template text → cell map ----
+    template_text_cells = {}
+    for r in tpl_ws.iter_rows():
+        for cell in r:
+            if isinstance(cell.value, str):
+                template_text_cells[cell.value.strip()] = cell
+
+    # ---- 4C: TM1 → Field → Template Mapping ----
+    for tm1_header, field_name in tm1_to_field.items():
+        if tm1_header not in tm1_headers:
+            continue
+        if field_name not in template_text_cells:
+            continue
+        if not rows:
+            continue
+
+        col_idx = tm1_headers[tm1_header]
+        value = cw_ws.cell(row=rows[0], column=col_idx).value  # first row per country
+
+        field_cell = template_text_cells[field_name]
+        tpl_ws.cell(
+            row=field_cell.row,
+            column=field_cell.column + 1
+        ).value = value
+
+    tpl_wb.save(output_path)
+
+print("✅ All booking country templates created and populated successfully.")
 
