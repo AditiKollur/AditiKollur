@@ -1,119 +1,135 @@
 ```
+import pandas as pd
+import difflib
 from openpyxl import load_workbook
-import shutil
-import os
 
 # ================= CONFIG =================
-MASTER_TEMPLATE_PATH = "Master_Template.xlsx"
 FIELD_MAPPER_PATH = "Field_mapper.xlsx"
 COST_WALK_PATH = "Cost_walk_summary.xlsx"
-OUTPUT_DIR = "output_templates"
+MASTER_TEMPLATE_PATH = "Master_Template.xlsx"
 
-# Field mapper sheets
-BOOKING_COUNTRY_SHEET = "Booking Country"
 FIELD_FILL_MAP_SHEET = "Field fill map"
-
-# Template
-TEMPLATE_SHEET = "Template"
-C4_CELL = "C4"
-
-# Cost walk
 COST_WALK_SHEET = "TM1"
+TEMPLATE_SHEET = "Template"
+
 HEADER_ROW = 27
-DATA_START_ROW = 28
-BOOKING_COUNTRY_COL = "D"
-COL_A = "A"
 # =========================================
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ---------- STEP 1: READ BOOKING COUNTRIES ----------
-fm_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
-bc_ws = fm_wb[BOOKING_COUNTRY_SHEET]
+# ---------- NORMALIZATION ----------
+def normalize(text):
+    if text is None:
+        return None
+    return " ".join(
+        str(text)
+        .replace("\u00a0", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+        .strip()
+        .lower()
+        .split()
+    )
 
-bc_headers = {cell.value: idx + 1 for idx, cell in enumerate(bc_ws[1])}
-bc_col_idx = bc_headers["Booking Country"]
 
-booking_countries = set()
-for row in bc_ws.iter_rows(min_row=2, values_only=True):
-    if row[bc_col_idx - 1]:
-        booking_countries.add(str(row[bc_col_idx - 1]).strip())
+# ---------- LOAD FIELD FILL MAP ----------
+ff_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
+ff_ws = ff_wb[FIELD_FILL_MAP_SHEET]
 
-# ---------- STEP 2: READ FIELD FILL MAP ----------
-ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
 ff_headers = {cell.value: idx + 1 for idx, cell in enumerate(ff_ws[1])}
-
 tm1_col = ff_headers["TM1"]
-field_name_col = ff_headers["Field name"]
+field_col = ff_headers["Field name"]
 
-tm1_to_field = {}
+field_map_rows = []
 for row in ff_ws.iter_rows(min_row=2, values_only=True):
-    if row[tm1_col - 1] and row[field_name_col - 1]:
-        tm1_to_field[str(row[tm1_col - 1]).strip()] = str(row[field_name_col - 1]).strip()
+    field_map_rows.append({
+        "tm1_raw": row[tm1_col - 1],
+        "field_name_raw": row[field_col - 1]
+    })
 
-# ---------- STEP 3: READ COST WALK SUMMARY ----------
+
+# ---------- LOAD COST WALK HEADERS ----------
 cw_wb = load_workbook(COST_WALK_PATH, data_only=True)
 cw_ws = cw_wb[COST_WALK_SHEET]
 
-# TM1 headers from row 27
-tm1_headers = {
-    cw_ws.cell(row=HEADER_ROW, column=col).value: col
-    for col in range(1, cw_ws.max_column + 1)
-    if cw_ws.cell(row=HEADER_ROW, column=col).value
-}
+cost_headers_raw = []
+for col in range(1, cw_ws.max_column + 1):
+    val = cw_ws.cell(row=HEADER_ROW, column=col).value
+    if val:
+        cost_headers_raw.append(val)
 
-# Booking country → rows
-country_rows = {}
-for row in range(DATA_START_ROW, cw_ws.max_row + 1):
-    country = cw_ws[f"{BOOKING_COUNTRY_COL}{row}"].value
-    if country:
-        country_rows.setdefault(str(country).strip(), []).append(row)
+cost_headers_norm = {normalize(h): h for h in cost_headers_raw}
 
-# ---------- STEP 4: CREATE TEMPLATES ----------
-for country in booking_countries:
-    output_path = os.path.join(OUTPUT_DIR, f"{country}_template.xlsx")
-    shutil.copy(MASTER_TEMPLATE_PATH, output_path)
 
-    tpl_wb = load_workbook(output_path)
-    tpl_ws = tpl_wb[TEMPLATE_SHEET]
+# ---------- LOAD TEMPLATE CELL TEXT ----------
+tpl_wb = load_workbook(MASTER_TEMPLATE_PATH, data_only=True)
+tpl_ws = tpl_wb[TEMPLATE_SHEET]
 
-    rows = country_rows.get(country, [])
+template_text_raw = []
+for row in tpl_ws.iter_rows():
+    for cell in row:
+        if isinstance(cell.value, str):
+            template_text_raw.append(cell.value)
 
-    # ---- 4A: Fill C4 with Column A values ----
-    col_a_values = []
-    for r in rows:
-        val = cw_ws[f"{COL_A}{r}"].value
-        if val:
-            col_a_values.append(str(val))
+template_text_norm = {normalize(t): t for t in template_text_raw}
 
-    tpl_ws[C4_CELL] = ", ".join(col_a_values)
 
-    # ---- 4B: Build Template text → cell map ----
-    template_text_cells = {}
-    for r in tpl_ws.iter_rows():
-        for cell in r:
-            if isinstance(cell.value, str):
-                template_text_cells[cell.value.strip()] = cell
+# ---------- BUILD DEBUG DATAFRAME ----------
+records = []
 
-    # ---- 4C: TM1 → Field → Template Mapping ----
-    for tm1_header, field_name in tm1_to_field.items():
-        if tm1_header not in tm1_headers:
-            continue
-        if field_name not in template_text_cells:
-            continue
-        if not rows:
-            continue
+for r in field_map_rows:
+    tm1_raw = r["tm1_raw"]
+    field_raw = r["field_name_raw"]
 
-        col_idx = tm1_headers[tm1_header]
-        value = cw_ws.cell(row=rows[0], column=col_idx).value  # first row per country
+    tm1_norm = normalize(tm1_raw)
+    field_norm = normalize(field_raw)
 
-        field_cell = template_text_cells[field_name]
-        tpl_ws.cell(
-            row=field_cell.row,
-            column=field_cell.column + 1
-        ).value = value
+    tm1_found = tm1_norm in cost_headers_norm
+    field_found = field_norm in template_text_norm
 
-    tpl_wb.save(output_path)
+    tm1_similar = difflib.get_close_matches(
+        tm1_norm or "",
+        cost_headers_norm.keys(),
+        n=3,
+        cutoff=0.6
+    )
 
-print("✅ All booking country templates created and populated successfully.")
+    field_similar = difflib.get_close_matches(
+        field_norm or "",
+        template_text_norm.keys(),
+        n=3,
+        cutoff=0.6
+    )
+
+    if tm1_found and field_found:
+        reason = "OK"
+    elif not tm1_found and not field_found:
+        reason = "TM1 header NOT found in Cost Walk AND Field name NOT found in Template"
+    elif not tm1_found:
+        reason = "TM1 header NOT found in Cost Walk (spacing / unicode / rename)"
+    else:
+        reason = "Field name NOT found in Template (textbox / merged cell / formatting)"
+
+    records.append({
+        "tm1_raw": tm1_raw,
+        "tm1_normalized": tm1_norm,
+        "found_in_cost_walk": tm1_found,
+        "cost_walk_similar_headers": ", ".join(tm1_similar),
+        "field_name_raw": field_raw,
+        "field_name_normalized": field_norm,
+        "found_in_template": field_found,
+        "template_similar_texts": ", ".join(field_similar),
+        "failure_reason": reason
+    })
+
+
+df_debug = pd.DataFrame(records)
+
+# ---------- VIEW RESULTS ----------
+print("\n=== ONLY FAILURES ===")
+print(df_debug[df_debug["failure_reason"] != "OK"])
+
+# Optional export
+df_debug.to_excel("mapping_debug.xlsx", index=False)
+
+print("\n✅ Debug file created: mapping_debug.xlsx")
 
