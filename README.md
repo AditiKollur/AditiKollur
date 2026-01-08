@@ -1,15 +1,15 @@
 ```
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
 from openpyxl.utils import column_index_from_string
 
 # ================= CONFIG =================
 WORKBOOK_PATH = "input_workbook.xlsx"
 REFERENCE_PATH = "reference.xlsx"
 REFERENCE_SHEET = "Sheet1"
+OUTPUT_WORKBOOK = "output_workbook.xlsx"
 
-# Tab colors
+# Tab colors (hex)
 AMBER_COLOR = "FFC000"
 BLUE_COLOR = "00B0F0"
 
@@ -21,12 +21,13 @@ wb = load_workbook(WORKBOOK_PATH, data_only=True)
 def get_column_sum_by_letter(ws, col_letter):
     """
     Reads numeric values from a column using Excel column letter.
-    Does NOT alter formulas or formatting.
+    Only checks rows 20 to 59 (inclusive).
+    Does NOT modify formulas or formatting.
     """
     col_idx = column_index_from_string(col_letter)
     total = 0
 
-    for row in range(2, ws.max_row + 1):  # assuming row 1 is header
+    for row in range(20, 60):  # 20–59 inclusive
         val = ws.cell(row=row, column=col_idx).value
         if isinstance(val, (int, float)):
             total += val
@@ -40,9 +41,11 @@ for _, row in ref_df.iterrows():
     ead_col_letter = str(row["EAD Column"]).strip()
     rwa_col_letter = str(row["RWA Column"]).strip()
 
+    # Process only flagged tabs
     if check_flag != "Y":
         continue
 
+    # Skip if sheet does not exist
     if tab_name not in wb.sheetnames:
         continue
 
@@ -54,8 +57,9 @@ for _, row in ref_df.iterrows():
     # Apply coloring rules
     if ead_value == 0 and rwa_value != 0:
         ws.sheet_properties.tabColor = AMBER_COLOR
+
     elif ead_value != 0 and rwa_value == 0:
         ws.sheet_properties.tabColor = BLUE_COLOR
 
 # ================= SAVE =================
-wb.save("output_workbook.xlsx")
+wb.save(OUTPUT_WORKBOOK)
