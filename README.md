@@ -18,12 +18,12 @@ output_file = os.path.abspath("product_by_site_pivot.xlsx")
 data_sheet = "Data"
 pivot_sheet = "Pivot"
 
-filt_pt = ["Active_Flag"]   # Filters → set to "N"
+filt_pt = ["Active_Flag"]   # Page filter
 rows_pt = ["Site"]
 columns_pt = ["Product"]
 values_pt = "Sales"
 
-FILTER_VALUE = "N"          # <<< REQUIRED VALUE
+FILTER_VALUE = "N"
 
 # ================= WRITE DATA =================
 df.to_excel(output_file, sheet_name=data_sheet, index=False)
@@ -59,26 +59,23 @@ pivot_table = pivot_cache.CreatePivotTable(
     TableName="Product_By_Site"
 )
 
-# ================= APPLY FILTERS = "N" =================
+# ================= FILTERS (SAFE WAY) =================
 for field in filt_pt:
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 3     # xlPageField
+    pf.Orientation = 3      # xlPageField
     pf.ClearAllFilters()
-
-    # Excel-safe way: loop items and select only "N"
-    for item in pf.PivotItems():
-        item.Visible = (item.Name == FILTER_VALUE)
+    pf.CurrentPage = FILTER_VALUE   # ✅ ONLY SAFE METHOD
 
 # ================= ROWS =================
 for i, field in enumerate(rows_pt, start=1):
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 1     # xlRowField
+    pf.Orientation = 1      # xlRowField
     pf.Position = i
 
 # ================= COLUMNS =================
 for i, field in enumerate(columns_pt, start=1):
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 2     # xlColumnField
+    pf.Orientation = 2      # xlColumnField
     pf.Position = i
 
 # ================= VALUES =================
@@ -98,5 +95,5 @@ wb.Save()
 wb.Close()
 excel.Quit()
 
-print("✅ Pivot created with all filters set to 'N' successfully.")
+print("✅ Pivot created successfully with filter set to 'N'")
 
