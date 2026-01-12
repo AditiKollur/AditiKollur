@@ -11,6 +11,7 @@ df = pd.DataFrame({
     "Product": ["A", "B", "A", "B", "A"],
     "Sales": [100, 150, 200, 180, 120],
     "Active_Flag": ["Y", "N", "N", "Y", "N"],
+    "Valid_Flag": ["N", "N", "Y", "N", "N"],
     "Year": [2023, 2023, 2023, 2023, 2024]
 })
 
@@ -20,7 +21,7 @@ FILE_PATH = os.path.abspath("product_by_site_pivot.xlsx")
 DATA_SHEET = "Data"
 PIVOT_SHEET = "Pivot"
 
-FILTER_FIELDS = ["Active_Flag"]
+FILTER_COLUMNS = ["Active_Flag", "Valid_Flag"]   # 🔴 MULTIPLE FILTERS
 FILTER_VALUE = "N"
 
 ROW_FIELDS = ["Site"]
@@ -33,7 +34,7 @@ df.to_excel(FILE_PATH, sheet_name=DATA_SHEET, index=False)
 # ================= OPEN EXCEL =================
 excel = win32.DispatchEx("Excel.Application")
 excel.Visible = False
-excel.DisplayAlerts = False   # ✅ safe to set
+excel.DisplayAlerts = False
 
 wb = excel.Workbooks.Open(FILE_PATH)
 ws_data = wb.Worksheets(DATA_SHEET)
@@ -61,27 +62,32 @@ pivot_table = pivot_cache.CreatePivotTable(
     TableName="Product_By_Site"
 )
 
-# 🔴 Force Excel to finalise pivot creation
+# 🔴 CRITICAL: force Excel to finalise pivot creation
 _ = pivot_table.PivotFields().Count
 time.sleep(0.3)
 
-# ================= FILTER =================
-pf = pivot_table.PivotFields("Active_Flag")
-pf.Orientation = constants.xlPageField
-pf.ClearAllFilters()
-pf.CurrentPage = FILTER_VALUE
+# ================= APPLY MULTIPLE FILTERS =================
+for field in FILTER_COLUMNS:
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = constants.xlPageField
+    pf.ClearAllFilters()
 
-# ================= ROWS =================
-pf = pivot_table.PivotFields("Site")
-pf.Orientation = constants.xlRowField
-pf.Position = 1
+    # ✅ ONLY SAFE METHOD
+    pf.CurrentPage = FILTER_VALUE
 
-# ================= COLUMNS =================
-pf = pivot_table.PivotFields("Product")
-pf.Orientation = constants.xlColumnField
-pf.Position = 1
+# ================= ROW FIELDS =================
+for pos, field in enumerate(ROW_FIELDS, start=1):
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = constants.xlRowField
+    pf.Position = pos
 
-# ================= VALUES =================
+# ================= COLUMN FIELDS =================
+for pos, field in enumerate(COLUMN_FIELDS, start=1):
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = constants.xlColumnField
+    pf.Position = pos
+
+# ================= VALUE FIELD =================
 pivot_table.AddDataField(
     pivot_table.PivotFields(VALUE_FIELD),
     f"Sum of {VALUE_FIELD}",
@@ -98,5 +104,5 @@ wb.Save()
 wb.Close()
 excel.Quit()
 
-print("✅ Pivot table created successfully (Calculation untouched)")
+print("✅ Pivot created successfully with MULTIPLE filters set to 'N'")
 
