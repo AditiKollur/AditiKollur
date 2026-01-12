@@ -1,65 +1,92 @@
 ```
 import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.utils import column_index_from_string
+from openpyxl.worksheet.table import Table
+from openpyxl.pivot.table import PivotTable, PivotField
+from openpyxl.pivot.cache import CacheDefinition, CacheSource, WorksheetSource
+
+# ================= SAMPLE DATA =================
+df = pd.DataFrame({
+    "Region": ["Asia", "Asia", "Europe", "Europe", "Asia"],
+    "Country": ["India", "China", "France", "Germany", "India"],
+    "Product": ["A", "A", "B", "A", "B"],
+    "Sales": [100, 150, 200, 180, 120],
+    "Year": [2023, 2023, 2023, 2023, 2024]
+})
 
 # ================= CONFIG =================
-WORKBOOK_PATH = "input_workbook.xlsx"
-REFERENCE_PATH = "reference.xlsx"
-REFERENCE_SHEET = "Sheet1"
-OUTPUT_WORKBOOK = "output_workbook.xlsx"
+output_file = "excel_native_pivot.xlsx"
 
-# Tab colors (hex)
-AMBER_COLOR = "FFC000"
-BLUE_COLOR = "00B0F0"
+data_sheet = "Data"
+pivot_sheet = "Pivot"
 
-# ================= LOAD =================
-ref_df = pd.read_excel(REFERENCE_PATH, sheet_name=REFERENCE_SHEET)
-wb = load_workbook(WORKBOOK_PATH, data_only=True)
+filt_pt = ["Year"]
+rows_pt = ["Region", "Country"]
+columns_pt = ["Product"]
+values_pt = "Sales"
 
-# ================= FUNCTIONS =================
-def get_column_sum_by_letter(ws, col_letter):
-    """
-    Reads numeric values from a column using Excel column letter.
-    Only checks rows 20 to 59 (inclusive).
-    Does NOT modify formulas or formatting.
-    """
-    col_idx = column_index_from_string(col_letter)
-    total = 0
+# ================= WRITE DATA =================
+with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+    df.to_excel(writer, sheet_name=data_sheet, index=False)
 
-    for row in range(20, 60):  # 20–59 inclusive
-        val = ws.cell(row=row, column=col_idx).value
-        if isinstance(val, (int, float)):
-            total += val
+# ================= LOAD WORKBOOK =================
+wb = load_workbook(output_file)
+ws_data = wb[data_sheet]
+ws_pivot = wb.create_sheet(pivot_sheet)
 
-    return total
+max_row = ws_data.max_row
+max_col = ws_data.max_column
+data_ref = f"{data_sheet}!A1:{chr(64+max_col)}{max_row}"
 
-# ================= PROCESS =================
-for _, row in ref_df.iterrows():
-    tab_name = row["Tab name"]
-    check_flag = row["Check column"]
-    ead_col_letter = str(row["EAD Column"]).strip()
-    rwa_col_letter = str(row["RWA Column"]).strip()
+# ================= CREATE CACHE =================
+cache_source = CacheSource(
+    type="worksheet",
+    worksheetSource=WorksheetSource(
+        sheet=data_sheet,
+        ref=f"A1:{chr(64+max_col)}{max_row}"
+    )
+)
 
-    # Process only flagged tabs
-    if check_flag != "Y":
-        continue
+cache_def = CacheDefinition(cacheSource=cache_source)
+cache = wb._add_pivot_cache(cache_def)
 
-    # Skip if sheet does not exist
-    if tab_name not in wb.sheetnames:
-        continue
+# ================= CREATE PIVOT TABLE =================
+pivot = PivotTable(
+    cache=cache,
+    ref="A3",
+    name="DynamicPivot"
+)
 
-    ws = wb[tab_name]
+headers = [cell.value for cell in ws_data[1]]
 
-    ead_value = get_column_sum_by_letter(ws, ead_col_letter)
-    rwa_value = get_column_sum_by_letter(ws, rwa_col_letter)
+# Filters
+for f in filt_pt:
+    idx = headers.index(f)
+    pf = PivotField(index=idx)
+    pivot.pageFields.append(pf)
 
-    # Apply coloring rules
-    if ead_value == 0 and rwa_value != 0:
-        ws.sheet_properties.tabColor = AMBER_COLOR
+# Rows
+for r in rows_pt:
+    idx = headers.index(r)
+    pf = PivotField(index=idx)
+    pivot.rowFields.append(pf)
 
-    elif ead_value != 0 and rwa_value == 0:
-        ws.sheet_properties.tabColor = BLUE_COLOR
+# Columns
+for c in columns_pt:
+    idx = headers.index(c)
+    pf = PivotField(index=idx)
+    pivot.colFields.append(pf)
+
+# Values
+val_idx = headers.index(values_pt)
+pivot.dataFields.append(
+    PivotField(index=val_idx, name=f"Sum of {values_pt}")
+)
+
+ws_pivot.add_pivot(pivot)
 
 # ================= SAVE =================
-wb.save(OUTPUT_WORKBOOK)
+wb.save(output_file)
+
+print("Excel-native modifiable Pivot Table created successfully.")
+
