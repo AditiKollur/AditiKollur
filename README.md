@@ -1,11 +1,11 @@
 ```
 import pandas as pd
-import win32com.client as win32
-from win32com.client import constants
-import shutil
+import xlwings as xw
 import os
 
-# ================= DATA =================
+# ======================================================
+# DATA
+# ======================================================
 df = pd.DataFrame({
     "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
     "Product": ["A", "B", "A", "B", "A"],
@@ -14,41 +14,85 @@ df = pd.DataFrame({
     "Valid_Flag": ["N", "N", "Y", "N", "N"]
 })
 
-# ================= PATHS =================
-TEMPLATE_FILE = os.path.abspath("pivot_template.xlsx")
-OUTPUT_FILE = os.path.abspath("final_output.xlsx")
-
+FILE_PATH = os.path.abspath("xlwings_pivot.xlsx")
 DATA_SHEET = "Data"
+PIVOT_SHEET = "Pivot"
 
-# ================= COPY TEMPLATE =================
-shutil.copy(TEMPLATE_FILE, OUTPUT_FILE)
+FILTER_COLUMNS = ["Active_Flag", "Valid_Flag"]
+FILTER_VALUE = "N"
 
-# ================= OPEN EXCEL =================
-excel = win32.DispatchEx("Excel.Application")
-excel.Visible = False
-excel.DisplayAlerts = False
+# ======================================================
+# WRITE DATA
+# ======================================================
+with pd.ExcelWriter(FILE_PATH, engine="xlsxwriter") as writer:
+    df.to_excel(writer, sheet_name=DATA_SHEET, index=False)
 
-wb = excel.Workbooks.Open(OUTPUT_FILE)
-ws_data = wb.Worksheets(DATA_SHEET)
+# ======================================================
+# EXCEL VIA XLWINGS
+# ======================================================
+app = xw.App(visible=False)
+wb = app.books.open(FILE_PATH)
 
-# ================= CLEAR OLD DATA =================
-ws_data.Cells.Clear()
+ws_data = wb.sheets[DATA_SHEET]
+ws_pivot = wb.sheets.add(PIVOT_SHEET)
 
-# ================= WRITE NEW DATA =================
-for col_idx, col_name in enumerate(df.columns, start=1):
-    ws_data.Cells(1, col_idx).Value = col_name
+# ======================================================
+# SOURCE RANGE
+# ======================================================
+last_row = ws_data.range("A" + str(ws_data.cells.last_cell.row)).end("up").row
+last_col = ws_data.range("A1").end("right").column
 
-for row_idx, row in enumerate(df.itertuples(index=False), start=2):
-    for col_idx, value in enumerate(row, start=1):
-        ws_data.Cells(row_idx, col_idx).Value = value
+source_range = ws_data.range((1, 1), (last_row, last_col))
 
-# ================= REFRESH ALL PIVOTS =================
-wb.RefreshAll()
+# ======================================================
+# CREATE PIVOT CACHE
+# ======================================================
+pivot_cache = wb.api.PivotCaches().Create(
+    SourceType=1,      # xlDatabase
+    SourceData=source_range.api
+)
 
-# ================= SAVE & CLOSE =================
-wb.Save()
-wb.Close()
-excel.Quit()
+# ======================================================
+# CREATE PIVOT TABLE (THIS WORKS)
+# ======================================================
+pivot = pivot_cache.CreatePivotTable(
+    TableDestination=ws_pivot.range("A3").api,
+    TableName="Product_By_Site"
+)
 
-print("✅ Data updated and pivot refreshed successfully")
+# ======================================================
+# ROWS / COLUMNS / VALUES
+# ======================================================
+pivot.PivotFields("Site").Orientation = 1     # xlRowField
+pivot.PivotFields("Product").Orientation = 2  # xlColumnField
+
+pivot.AddDataField(
+    pivot.PivotFields("Sales"),
+    "Sum of Sales",
+    -4157                                      # xlSum
+)
+
+# ======================================================
+# MULTIPLE FILTERS = "N"
+# ======================================================
+for col in FILTER_COLUMNS:
+    pf = pivot.PivotFields(col)
+    pf.Orientation = 3     # xlPageField
+    pf.ClearAllFilters()
+
+    items = [i.Name for i in pf.PivotItems()]
+    if FILTER_VALUE in items:
+        pf.CurrentPage = FILTER_VALUE
+
+# ======================================================
+# FINAL TOUCH
+# ======================================================
+pivot.TableStyle2 = "PivotStyleMedium9"
+ws_pivot.autofit()
+
+wb.save()
+wb.close()
+app.quit()
+
+print("✅ Pivot table created successfully using xlwings")
 
