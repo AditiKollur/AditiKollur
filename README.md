@@ -1,92 +1,55 @@
 ```
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.worksheet.table import Table
-from openpyxl.pivot.table import PivotTable, PivotField
-from openpyxl.pivot.cache import CacheDefinition, CacheSource, WorksheetSource
 
 # ================= SAMPLE DATA =================
 df = pd.DataFrame({
-    "Region": ["Asia", "Asia", "Europe", "Europe", "Asia"],
-    "Country": ["India", "China", "France", "Germany", "India"],
-    "Product": ["A", "A", "B", "A", "B"],
+    "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
+    "Product": ["A", "B", "A", "B", "A"],
     "Sales": [100, 150, 200, 180, 120],
     "Year": [2023, 2023, 2023, 2023, 2024]
 })
 
 # ================= CONFIG =================
-output_file = "excel_native_pivot.xlsx"
-
+output_file = "product_by_site_pivot.xlsx"
 data_sheet = "Data"
 pivot_sheet = "Pivot"
 
 filt_pt = ["Year"]
-rows_pt = ["Region", "Country"]
+rows_pt = ["Site"]
 columns_pt = ["Product"]
 values_pt = "Sales"
 
-# ================= WRITE DATA =================
-with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+# ================= WRITE WITH XLSXWRITER =================
+with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
     df.to_excel(writer, sheet_name=data_sheet, index=False)
 
-# ================= LOAD WORKBOOK =================
-wb = load_workbook(output_file)
-ws_data = wb[data_sheet]
-ws_pivot = wb.create_sheet(pivot_sheet)
+    workbook = writer.book
+    worksheet = writer.sheets[data_sheet]
 
-max_row = ws_data.max_row
-max_col = ws_data.max_column
-data_ref = f"{data_sheet}!A1:{chr(64+max_col)}{max_row}"
+    pivot_ws = workbook.add_worksheet(pivot_sheet)
 
-# ================= CREATE CACHE =================
-cache_source = CacheSource(
-    type="worksheet",
-    worksheetSource=WorksheetSource(
-        sheet=data_sheet,
-        ref=f"A1:{chr(64+max_col)}{max_row}"
-    )
-)
+    # Define source range
+    max_row, max_col = df.shape
+    source_range = f"{data_sheet}!A1:{chr(65+max_col-1)}{max_row+1}"
 
-cache_def = CacheDefinition(cacheSource=cache_source)
-cache = wb._add_pivot_cache(cache_def)
+    # Create Pivot Table
+    pivot_ws.add_pivot_table({
+        "data": source_range,
+        "rows": rows_pt,
+        "columns": columns_pt,
+        "filters": filt_pt,
+        "values": [
+            {
+                "field": values_pt,
+                "function": "sum",
+                "name": f"Sum of {values_pt}"
+            }
+        ],
+        "row_headers": True,
+        "column_headers": True
+    })
 
-# ================= CREATE PIVOT TABLE =================
-pivot = PivotTable(
-    cache=cache,
-    ref="A3",
-    name="DynamicPivot"
-)
-
-headers = [cell.value for cell in ws_data[1]]
-
-# Filters
-for f in filt_pt:
-    idx = headers.index(f)
-    pf = PivotField(index=idx)
-    pivot.pageFields.append(pf)
-
-# Rows
-for r in rows_pt:
-    idx = headers.index(r)
-    pf = PivotField(index=idx)
-    pivot.rowFields.append(pf)
-
-# Columns
-for c in columns_pt:
-    idx = headers.index(c)
-    pf = PivotField(index=idx)
-    pivot.colFields.append(pf)
-
-# Values
-val_idx = headers.index(values_pt)
-pivot.dataFields.append(
-    PivotField(index=val_idx, name=f"Sum of {values_pt}")
-)
-
-ws_pivot.add_pivot(pivot)
-
-# ================= SAVE =================
-wb.save(output_file)
+    pivot_ws.set_column("A:Z", 15)
 
 print("Excel-native modifiable Pivot Table created successfully.")
 
