@@ -2,12 +2,10 @@
 import pandas as pd
 import win32com.client as win32
 from win32com.client import constants
+import shutil
 import os
-import time
 
-# =====================================================
-# 1. DATA
-# =====================================================
+# ================= DATA =================
 df = pd.DataFrame({
     "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
     "Product": ["A", "B", "A", "B", "A"],
@@ -16,105 +14,41 @@ df = pd.DataFrame({
     "Valid_Flag": ["N", "N", "Y", "N", "N"]
 })
 
-FILE_PATH = os.path.abspath("FINAL_PIVOT.xlsx")
+# ================= PATHS =================
+TEMPLATE_FILE = os.path.abspath("pivot_template.xlsx")
+OUTPUT_FILE = os.path.abspath("final_output.xlsx")
+
 DATA_SHEET = "Data"
-PIVOT_SHEET = "Pivot"
 
-FILTER_COLUMNS = ["Active_Flag", "Valid_Flag"]
-FILTER_VALUE = "N"
+# ================= COPY TEMPLATE =================
+shutil.copy(TEMPLATE_FILE, OUTPUT_FILE)
 
-# =====================================================
-# 2. WRITE DATA (NO EXCEL YET)
-# =====================================================
-df.to_excel(FILE_PATH, sheet_name=DATA_SHEET, index=False)
-
-# =====================================================
-# 3. START EXCEL (ISOLATED INSTANCE)
-# =====================================================
+# ================= OPEN EXCEL =================
 excel = win32.DispatchEx("Excel.Application")
 excel.Visible = False
 excel.DisplayAlerts = False
 
-wb = excel.Workbooks.Open(FILE_PATH)
-
+wb = excel.Workbooks.Open(OUTPUT_FILE)
 ws_data = wb.Worksheets(DATA_SHEET)
-ws_pivot = wb.Worksheets.Add(After=ws_data)
-ws_pivot.Name = PIVOT_SHEET
 
-# =====================================================
-# 4. DEFINE SOURCE RANGE (CRITICAL)
-# =====================================================
-last_row = ws_data.Cells(ws_data.Rows.Count, 1).End(constants.xlUp).Row
-last_col = ws_data.Cells(1, ws_data.Columns.Count).End(constants.xlToLeft).Column
+# ================= CLEAR OLD DATA =================
+ws_data.Cells.Clear()
 
-source_range = ws_data.Range(
-    ws_data.Cells(1, 1),
-    ws_data.Cells(last_row, last_col)
-)
+# ================= WRITE NEW DATA =================
+for col_idx, col_name in enumerate(df.columns, start=1):
+    ws_data.Cells(1, col_idx).Value = col_name
 
-# =====================================================
-# 5. CREATE PIVOT CACHE (THIS IS THE KEY OBJECT)
-# =====================================================
-pivot_cache = wb.PivotCaches().Create(
-    SourceType=constants.xlDatabase,
-    SourceData=source_range
-)
+for row_idx, row in enumerate(df.itertuples(index=False), start=2):
+    for col_idx, value in enumerate(row, start=1):
+        ws_data.Cells(row_idx, col_idx).Value = value
 
-# =====================================================
-# 6. CREATE PIVOT TABLE (DO NOTHING ELSE YET)
-# =====================================================
-pivot = pivot_cache.CreatePivotTable(
-    TableDestination=ws_pivot.Cells(1, 1),
-    TableName="FINAL_PIVOT"
-)
+# ================= REFRESH ALL PIVOTS =================
+wb.RefreshAll()
 
-# 🔴 FORCE EXCEL TO COMMIT THE PIVOT
-pivot.RefreshTable()
-time.sleep(1)
-
-# =====================================================
-# 7. ADD ROWS / COLUMNS / VALUES FIRST
-# =====================================================
-pivot.PivotFields("Site").Orientation = constants.xlRowField
-pivot.PivotFields("Product").Orientation = constants.xlColumnField
-
-pivot.AddDataField(
-    pivot.PivotFields("Sales"),
-    "Sum of Sales",
-    constants.xlSum
-)
-
-# =====================================================
-# 8. NOW APPLY FILTERS (LAST STEP)
-# =====================================================
-for col in FILTER_COLUMNS:
-    pf = pivot.PivotFields(col)
-    pf.Orientation = constants.xlPageField
-    pf.ClearAllFilters()
-
-    # Safe filter application
-    items = [i.Name for i in pf.PivotItems()]
-    if FILTER_VALUE in items:
-        pf.CurrentPage = FILTER_VALUE
-    else:
-        # fallback – first non-blank
-        for i in items:
-            if i not in ("(blank)", ""):
-                pf.CurrentPage = i
-                break
-
-# =====================================================
-# 9. FINAL TOUCH
-# =====================================================
-pivot.TableStyle2 = "PivotStyleMedium9"
-ws_pivot.Columns.AutoFit()
-
-# =====================================================
-# 10. SAVE & EXIT
-# =====================================================
+# ================= SAVE & CLOSE =================
 wb.Save()
 wb.Close()
 excel.Quit()
 
-print("✅ Pivot table CREATED — verified Excel-native PivotCache")
+print("✅ Data updated and pivot refreshed successfully")
 
