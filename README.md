@@ -1,9 +1,11 @@
 ```
 import pandas as pd
 import win32com.client as win32
+from win32com.client import constants
 import os
+import time
 
-# ================= SAMPLE DATA =================
+# ================= DATA =================
 df = pd.DataFrame({
     "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
     "Product": ["A", "B", "A", "B", "A"],
@@ -13,43 +15,44 @@ df = pd.DataFrame({
 })
 
 # ================= CONFIG =================
-output_file = os.path.abspath("product_by_site_pivot.xlsx")
+FILE_PATH = os.path.abspath("product_by_site_pivot.xlsx")
 
-data_sheet = "Data"
-pivot_sheet = "Pivot"
+DATA_SHEET = "Data"
+PIVOT_SHEET = "Pivot"
 
-filt_pt = ["Active_Flag"]   # Page filter
-rows_pt = ["Site"]
-columns_pt = ["Product"]
-values_pt = "Sales"
-
+FILTER_FIELDS = ["Active_Flag"]
 FILTER_VALUE = "N"
 
+ROW_FIELDS = ["Site"]
+COLUMN_FIELDS = ["Product"]
+VALUE_FIELD = "Sales"
+
 # ================= WRITE DATA =================
-df.to_excel(output_file, sheet_name=data_sheet, index=False)
+df.to_excel(FILE_PATH, sheet_name=DATA_SHEET, index=False)
 
 # ================= OPEN EXCEL =================
-excel = win32.Dispatch("Excel.Application")
+excel = win32.DispatchEx("Excel.Application")
 excel.Visible = False
 excel.DisplayAlerts = False
+excel.Calculation = constants.xlCalculationManual
 
-wb = excel.Workbooks.Open(output_file)
-ws_data = wb.Worksheets(data_sheet)
+wb = excel.Workbooks.Open(FILE_PATH)
+ws_data = wb.Worksheets(DATA_SHEET)
 ws_pivot = wb.Worksheets.Add()
-ws_pivot.Name = pivot_sheet
+ws_pivot.Name = PIVOT_SHEET
 
-# ================= DATA RANGE =================
-last_row = ws_data.Cells(ws_data.Rows.Count, 1).End(-4162).Row   # xlUp
-last_col = ws_data.Cells(1, ws_data.Columns.Count).End(-4159).Column  # xlToLeft
+# ================= SOURCE RANGE =================
+last_row = ws_data.Cells(ws_data.Rows.Count, 1).End(constants.xlUp).Row
+last_col = ws_data.Cells(1, ws_data.Columns.Count).End(constants.xlToLeft).Column
 
 source_range = ws_data.Range(
     ws_data.Cells(1, 1),
     ws_data.Cells(last_row, last_col)
 )
 
-# ================= CREATE PIVOT CACHE =================
+# ================= CREATE PIVOT CACHE (THIS IS PivotCaches) =================
 pivot_cache = wb.PivotCaches().Create(
-    SourceType=1,        # xlDatabase
+    SourceType=constants.xlDatabase,
     SourceData=source_range
 )
 
@@ -59,41 +62,47 @@ pivot_table = pivot_cache.CreatePivotTable(
     TableName="Product_By_Site"
 )
 
-# ================= FILTERS (SAFE WAY) =================
-for field in filt_pt:
+# 🔴 Force Excel to fully initialise the pivot
+_ = pivot_table.PivotFields().Count
+time.sleep(0.3)
+
+# ================= PAGE FILTERS =================
+for field in FILTER_FIELDS:
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 3      # xlPageField
+    pf.Orientation = constants.xlPageField
     pf.ClearAllFilters()
-    pf.CurrentPage = FILTER_VALUE   # ✅ ONLY SAFE METHOD
+    pf.CurrentPage = FILTER_VALUE   # SAFE & REQUIRED
 
-# ================= ROWS =================
-for i, field in enumerate(rows_pt, start=1):
+# ================= ROW FIELDS =================
+for pos, field in enumerate(ROW_FIELDS, start=1):
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 1      # xlRowField
-    pf.Position = i
+    pf.Orientation = constants.xlRowField
+    pf.Position = pos
 
-# ================= COLUMNS =================
-for i, field in enumerate(columns_pt, start=1):
+# ================= COLUMN FIELDS =================
+for pos, field in enumerate(COLUMN_FIELDS, start=1):
     pf = pivot_table.PivotFields(field)
-    pf.Orientation = 2      # xlColumnField
-    pf.Position = i
+    pf.Orientation = constants.xlColumnField
+    pf.Position = pos
 
-# ================= VALUES =================
+# ================= VALUE FIELD =================
 pivot_table.AddDataField(
-    pivot_table.PivotFields(values_pt),
-    f"Sum of {values_pt}",
-    -4157                  # xlSum
+    pivot_table.PivotFields(VALUE_FIELD),
+    f"Sum of {VALUE_FIELD}",
+    constants.xlSum
 )
 
-# ================= FORMATTING =================
-pivot_table.RowAxisLayout(1)   # xlTabular
+# ================= FORMAT =================
+pivot_table.RowAxisLayout(constants.xlTabularRow)
 pivot_table.TableStyle2 = "PivotStyleMedium9"
 ws_pivot.Columns.AutoFit()
 
 # ================= SAVE & CLOSE =================
 wb.Save()
 wb.Close()
+
+excel.Calculation = constants.xlCalculationAutomatic
 excel.Quit()
 
-print("✅ Pivot created successfully with filter set to 'N'")
+print("✅ Pivot table created using Excel PivotCaches successfully.")
 
