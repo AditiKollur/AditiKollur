@@ -1,55 +1,102 @@
 ```
 import pandas as pd
+import win32com.client as win32
+import os
 
 # ================= SAMPLE DATA =================
 df = pd.DataFrame({
     "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
     "Product": ["A", "B", "A", "B", "A"],
     "Sales": [100, 150, 200, 180, 120],
+    "Active_Flag": ["Y", "N", "N", "Y", "N"],
     "Year": [2023, 2023, 2023, 2023, 2024]
 })
 
 # ================= CONFIG =================
-output_file = "product_by_site_pivot.xlsx"
+output_file = os.path.abspath("product_by_site_pivot.xlsx")
+
 data_sheet = "Data"
 pivot_sheet = "Pivot"
 
-filt_pt = ["Year"]
+filt_pt = ["Active_Flag"]   # Filters → set to "N"
 rows_pt = ["Site"]
 columns_pt = ["Product"]
 values_pt = "Sales"
 
-# ================= WRITE WITH XLSXWRITER =================
-with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
-    df.to_excel(writer, sheet_name=data_sheet, index=False)
+FILTER_VALUE = "N"          # <<< REQUIRED VALUE
 
-    workbook = writer.book
-    worksheet = writer.sheets[data_sheet]
+# ================= WRITE DATA =================
+df.to_excel(output_file, sheet_name=data_sheet, index=False)
 
-    pivot_ws = workbook.add_worksheet(pivot_sheet)
+# ================= OPEN EXCEL =================
+excel = win32.Dispatch("Excel.Application")
+excel.Visible = False
+excel.DisplayAlerts = False
 
-    # Define source range
-    max_row, max_col = df.shape
-    source_range = f"{data_sheet}!A1:{chr(65+max_col-1)}{max_row+1}"
+wb = excel.Workbooks.Open(output_file)
+ws_data = wb.Worksheets(data_sheet)
+ws_pivot = wb.Worksheets.Add()
+ws_pivot.Name = pivot_sheet
 
-    # Create Pivot Table
-    pivot_ws.add_pivot_table({
-        "data": source_range,
-        "rows": rows_pt,
-        "columns": columns_pt,
-        "filters": filt_pt,
-        "values": [
-            {
-                "field": values_pt,
-                "function": "sum",
-                "name": f"Sum of {values_pt}"
-            }
-        ],
-        "row_headers": True,
-        "column_headers": True
-    })
+# ================= DATA RANGE =================
+last_row = ws_data.Cells(ws_data.Rows.Count, 1).End(-4162).Row   # xlUp
+last_col = ws_data.Cells(1, ws_data.Columns.Count).End(-4159).Column  # xlToLeft
 
-    pivot_ws.set_column("A:Z", 15)
+source_range = ws_data.Range(
+    ws_data.Cells(1, 1),
+    ws_data.Cells(last_row, last_col)
+)
 
-print("Excel-native modifiable Pivot Table created successfully.")
+# ================= CREATE PIVOT CACHE =================
+pivot_cache = wb.PivotCaches().Create(
+    SourceType=1,        # xlDatabase
+    SourceData=source_range
+)
+
+# ================= CREATE PIVOT TABLE =================
+pivot_table = pivot_cache.CreatePivotTable(
+    TableDestination=ws_pivot.Cells(3, 1),
+    TableName="Product_By_Site"
+)
+
+# ================= APPLY FILTERS = "N" =================
+for field in filt_pt:
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = 3     # xlPageField
+    pf.ClearAllFilters()
+
+    # Excel-safe way: loop items and select only "N"
+    for item in pf.PivotItems():
+        item.Visible = (item.Name == FILTER_VALUE)
+
+# ================= ROWS =================
+for i, field in enumerate(rows_pt, start=1):
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = 1     # xlRowField
+    pf.Position = i
+
+# ================= COLUMNS =================
+for i, field in enumerate(columns_pt, start=1):
+    pf = pivot_table.PivotFields(field)
+    pf.Orientation = 2     # xlColumnField
+    pf.Position = i
+
+# ================= VALUES =================
+pivot_table.AddDataField(
+    pivot_table.PivotFields(values_pt),
+    f"Sum of {values_pt}",
+    -4157                  # xlSum
+)
+
+# ================= FORMATTING =================
+pivot_table.RowAxisLayout(1)   # xlTabular
+pivot_table.TableStyle2 = "PivotStyleMedium9"
+ws_pivot.Columns.AutoFit()
+
+# ================= SAVE & CLOSE =================
+wb.Save()
+wb.Close()
+excel.Quit()
+
+print("✅ Pivot created with all filters set to 'N' successfully.")
 
