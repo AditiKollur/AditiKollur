@@ -33,8 +33,7 @@ df.to_excel(FILE_PATH, sheet_name=DATA_SHEET, index=False)
 # ================= OPEN EXCEL =================
 excel = win32.DispatchEx("Excel.Application")
 excel.Visible = False
-excel.DisplayAlerts = False
-excel.Calculation = constants.xlCalculationManual
+excel.DisplayAlerts = False   # ✅ safe to set
 
 wb = excel.Workbooks.Open(FILE_PATH)
 ws_data = wb.Worksheets(DATA_SHEET)
@@ -50,7 +49,7 @@ source_range = ws_data.Range(
     ws_data.Cells(last_row, last_col)
 )
 
-# ================= CREATE PIVOT CACHE (THIS IS PivotCaches) =================
+# ================= CREATE PIVOT CACHE =================
 pivot_cache = wb.PivotCaches().Create(
     SourceType=constants.xlDatabase,
     SourceData=source_range
@@ -62,30 +61,27 @@ pivot_table = pivot_cache.CreatePivotTable(
     TableName="Product_By_Site"
 )
 
-# 🔴 Force Excel to fully initialise the pivot
+# 🔴 Force Excel to finalise pivot creation
 _ = pivot_table.PivotFields().Count
 time.sleep(0.3)
 
-# ================= PAGE FILTERS =================
-for field in FILTER_FIELDS:
-    pf = pivot_table.PivotFields(field)
-    pf.Orientation = constants.xlPageField
-    pf.ClearAllFilters()
-    pf.CurrentPage = FILTER_VALUE   # SAFE & REQUIRED
+# ================= FILTER =================
+pf = pivot_table.PivotFields("Active_Flag")
+pf.Orientation = constants.xlPageField
+pf.ClearAllFilters()
+pf.CurrentPage = FILTER_VALUE
 
-# ================= ROW FIELDS =================
-for pos, field in enumerate(ROW_FIELDS, start=1):
-    pf = pivot_table.PivotFields(field)
-    pf.Orientation = constants.xlRowField
-    pf.Position = pos
+# ================= ROWS =================
+pf = pivot_table.PivotFields("Site")
+pf.Orientation = constants.xlRowField
+pf.Position = 1
 
-# ================= COLUMN FIELDS =================
-for pos, field in enumerate(COLUMN_FIELDS, start=1):
-    pf = pivot_table.PivotFields(field)
-    pf.Orientation = constants.xlColumnField
-    pf.Position = pos
+# ================= COLUMNS =================
+pf = pivot_table.PivotFields("Product")
+pf.Orientation = constants.xlColumnField
+pf.Position = 1
 
-# ================= VALUE FIELD =================
+# ================= VALUES =================
 pivot_table.AddDataField(
     pivot_table.PivotFields(VALUE_FIELD),
     f"Sum of {VALUE_FIELD}",
@@ -100,9 +96,7 @@ ws_pivot.Columns.AutoFit()
 # ================= SAVE & CLOSE =================
 wb.Save()
 wb.Close()
-
-excel.Calculation = constants.xlCalculationAutomatic
 excel.Quit()
 
-print("✅ Pivot table created using Excel PivotCaches successfully.")
+print("✅ Pivot table created successfully (Calculation untouched)")
 
