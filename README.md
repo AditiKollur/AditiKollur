@@ -20,6 +20,7 @@ OMNIA_COL_SHEET = "Omnia_col"
 
 # Template
 TEMPLATE_SHEET = "Template"
+TEMPLATE_COL_HEADER_ROW = 26
 C4_CELL = "C4"
 
 # Cost walk
@@ -35,7 +36,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ---------- LOAD FIELD MAPPER ----------
 fm_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
 
-# Booking Countries
+# ---- Booking Countries ----
 bc_ws = fm_wb[BOOKING_COUNTRY_SHEET]
 bc_headers = {c.value: i + 1 for i, c in enumerate(bc_ws[1])}
 bc_col_idx = bc_headers["Booking Country"]
@@ -49,7 +50,7 @@ for r in bc_ws.iter_rows(min_row=2, values_only=True):
             booking_countries.append(c)
             seen.add(c)
 
-# TM1 → Field mapping
+# ---- TM1 → Template Field mapping ----
 ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
 ff_headers = {c.value: i + 1 for i, c in enumerate(ff_ws[1])}
 
@@ -64,15 +65,14 @@ for r in ff_ws.iter_rows(min_row=2, values_only=True):
             str(r[field_col - 1]).strip()
         ))
 
-# Omnia metrics (PT COLUMNS)
-omnia_metrics = [
+# ---- Omnia mappings ----
+omnia_rows = [
     str(r[0]).strip()
     for r in fm_wb[OMNIA_ROWS_SHEET].iter_rows(min_row=2, values_only=True)
     if r[0]
 ]
 
-# Omnia business areas (PT ROW FILTER)
-omnia_business_areas = [
+omnia_cols = [
     str(r[0]).strip()
     for r in fm_wb[OMNIA_COL_SHEET].iter_rows(min_row=2, values_only=True)
     if r[0]
@@ -94,10 +94,9 @@ for r in range(DATA_START_ROW, cw_ws.max_row + 1):
     if country:
         country_rows.setdefault(str(country).strip(), []).append(r)
 
-# ---------- PT DATAFRAME (ALREADY IN MEMORY) ----------
-# pt_df must already exist
+# ---------- PT DATAFRAME (ALREADY EXISTS) ----------
 # Required columns:
-# Booking Country, Business Area, + omnia_metrics
+# Booking Country, Business Area, + omnia_rows metrics
 
 pt_df["Booking Country"] = pt_df["Booking Country"].astype(str).str.strip()
 pt_df["Business Area"] = pt_df["Business Area"].astype(str).str.strip()
@@ -119,16 +118,28 @@ for country in booking_countries:
         if cw_ws[f"{COL_A}{r}"].value not in [None, ""]
     )
 
-    # ---- Build FIRST OCCURRENCE text map ----
-    template_text_cells = defaultdict(list)
+    # ---- Build Template row label → row index (FIRST occurrence) ----
+    template_row_index = {}
     for row in tpl_ws.iter_rows():
         for cell in row:
             if isinstance(cell.value, str):
-                template_text_cells[cell.value.strip()].append(cell)
+                key = cell.value.strip()
+                if key not in template_row_index:
+                    template_row_index[key] = cell.row
 
-    # ---- TM1 → Field fill ----
+    # ---- Build Template column label → column index (ROW 26 ONLY) ----
+    template_col_index = {}
+    for cell in tpl_ws[TEMPLATE_COL_HEADER_ROW]:
+        if isinstance(cell.value, str):
+            key = cell.value.strip()
+            if key not in template_col_index:
+                template_col_index[key] = cell.column
+
+    # ---- TM1 → Field mapping ----
     for tm1_header, field_name in tm1_to_field:
-        if tm1_header not in tm1_headers or field_name not in template_text_cells:
+        if tm1_header not in tm1_headers:
+            continue
+        if field_name not in template_row_index:
             continue
         if not rows:
             continue
@@ -146,24 +157,23 @@ for country in booking_countries:
         if value is None:
             continue
 
-        anchor = template_text_cells[field_name][0]
-        target = tpl_ws.cell(anchor.row, anchor.column + 1)
+        row_idx = template_row_index[field_name]
+        target = tpl_ws.cell(row=row_idx, column=template_col_index.get(field_name, 0) + 1)
+
         if target.value in [None, ""]:
             target.value = value
 
-    # ---- OMNIA MATRIX FILL (CORRECTED) ----
-    for business_area in omnia_business_areas:
+    # ---- OMNIA MATRIX FILL (FINAL CORRECT LOGIC) ----
+    for col_label in omnia_cols:
 
-        # Column anchor in template
-        if business_area not in template_text_cells:
+        if col_label not in template_col_index:
             continue
-        col_anchor = template_text_cells[business_area][0]
-        col_idx = col_anchor.column
 
-        # Filter PT for country + business area
+        col_idx = template_col_index[col_label]
+
         pt_slice = pt_df[
             (pt_df["Booking Country"] == country) &
-            (pt_df["Business Area"] == business_area)
+            (pt_df["Business Area"] == col_label)
         ]
 
         if pt_slice.empty:
@@ -171,24 +181,23 @@ for country in booking_countries:
 
         pt_row = pt_slice.iloc[0]
 
-        for metric in omnia_metrics:
+        for metric in omnia_rows:
 
-            # Metric must be PT column
+            if metric not in template_row_index:
+                continue
             if metric not in pt_row:
                 continue
-            if metric not in template_text_cells:
-                continue
 
-            row_anchor = template_text_cells[metric][0]
             value = pt_row[metric]
-
             if value in [None, ""]:
                 continue
 
-            target = tpl_ws.cell(row_anchor.row, col_idx)
+            row_idx = template_row_index[metric]
+            target = tpl_ws.cell(row=row_idx, column=col_idx)
+
             if target.value in [None, ""]:
                 target.value = value
 
     tpl_wb.save(output_path)
 
-print("✅ Templates populated correctly using Omnia row/column logic.")
+print("✅ All templates populated correctly using Omnia row/column mapping.")
