@@ -1,98 +1,192 @@
 ```
+from openpyxl import load_workbook
+from collections import defaultdict
 import pandas as pd
-import xlwings as xw
+import shutil
 import os
 
-# ======================================================
-# DATA
-# ======================================================
-df = pd.DataFrame({
-    "Site": ["Plant1", "Plant1", "Plant2", "Plant2", "Plant1"],
-    "Product": ["A", "B", "A", "B", "A"],
-    "Sales": [100, 150, 200, 180, 120],
-    "Active_Flag": ["Y", "N", "N", "Y", "N"],
-    "Valid_Flag": ["N", "N", "Y", "N", "N"]
-})
+# ================= CONFIG =================
+MASTER_TEMPLATE_PATH = "Master_Template.xlsx"
+FIELD_MAPPER_PATH = "Field_mapper.xlsx"
+COST_WALK_PATH = "Cost_walk_summary.xlsx"
+PT_DATA_PATH = "pt_dataframe.xlsx"
 
-FILE_PATH = os.path.abspath("xlwings_pivot.xlsx")
-DATA_SHEET = "Data"
-PIVOT_SHEET = "Pivot"
+OUTPUT_DIR = "output_templates"
 
-FILTER_COLUMNS = ["Active_Flag", "Valid_Flag"]
-FILTER_VALUE = "N"
+# Field mapper sheets
+BOOKING_COUNTRY_SHEET = "Booking Country"
+FIELD_FILL_MAP_SHEET = "Field fill map"
+OMNIA_ROWS_SHEET = "Omnia_rows"
+OMNIA_COL_SHEET = "Omnia_col"
 
-# ======================================================
-# WRITE DATA
-# ======================================================
-with pd.ExcelWriter(FILE_PATH, engine="xlsxwriter") as writer:
-    df.to_excel(writer, sheet_name=DATA_SHEET, index=False)
+# Template
+TEMPLATE_SHEET = "Template"
+C4_CELL = "C4"
 
-# ======================================================
-# EXCEL VIA XLWINGS
-# ======================================================
-app = xw.App(visible=False)
-wb = app.books.open(FILE_PATH)
+# Cost walk
+COST_WALK_SHEET = "TM1"
+HEADER_ROW = 27
+DATA_START_ROW = 28
+BOOKING_COUNTRY_COL = "D"
+COL_A = "A"
+# =========================================
 
-ws_data = wb.sheets[DATA_SHEET]
-ws_pivot = wb.sheets.add(PIVOT_SHEET)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ======================================================
-# SOURCE RANGE
-# ======================================================
-last_row = ws_data.range("A" + str(ws_data.cells.last_cell.row)).end("up").row
-last_col = ws_data.range("A1").end("right").column
+# ---------- STEP 1: LOAD FIELD MAPPER ----------
+fm_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
 
-source_range = ws_data.range((1, 1), (last_row, last_col))
+# Booking Countries
+bc_ws = fm_wb[BOOKING_COUNTRY_SHEET]
+bc_headers = {c.value: i + 1 for i, c in enumerate(bc_ws[1])}
+bc_col_idx = bc_headers["Booking Country"]
 
-# ======================================================
-# CREATE PIVOT CACHE
-# ======================================================
-pivot_cache = wb.api.PivotCaches().Create(
-    SourceType=1,      # xlDatabase
-    SourceData=source_range.api
-)
+booking_countries = []
+seen = set()
+for r in bc_ws.iter_rows(min_row=2, values_only=True):
+    if r[bc_col_idx - 1]:
+        c = str(r[bc_col_idx - 1]).strip()
+        if c not in seen:
+            booking_countries.append(c)
+            seen.add(c)
 
-# ======================================================
-# CREATE PIVOT TABLE (THIS WORKS)
-# ======================================================
-pivot = pivot_cache.CreatePivotTable(
-    TableDestination=ws_pivot.range("A3").api,
-    TableName="Product_By_Site"
-)
+# TM1 → Field mapping
+ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
+ff_headers = {c.value: i + 1 for i, c in enumerate(ff_ws[1])}
+tm1_col = ff_headers["TM1"]
+field_col = ff_headers["Field name"]
 
-# ======================================================
-# ROWS / COLUMNS / VALUES
-# ======================================================
-pivot.PivotFields("Site").Orientation = 1     # xlRowField
-pivot.PivotFields("Product").Orientation = 2  # xlColumnField
+tm1_to_field = []
+for r in ff_ws.iter_rows(min_row=2, values_only=True):
+    if r[tm1_col - 1] and r[field_col - 1]:
+        tm1_to_field.append((
+            str(r[tm1_col - 1]).strip(),
+            str(r[field_col - 1]).strip()
+        ))
 
-pivot.AddDataField(
-    pivot.PivotFields("Sales"),
-    "Sum of Sales",
-    -4157                                      # xlSum
-)
+# Omnia rows / cols
+omnia_rows = [
+    str(r[0]).strip()
+    for r in fm_wb[OMNIA_ROWS_SHEET].iter_rows(min_row=2, values_only=True)
+    if r[0]
+]
 
-# ======================================================
-# MULTIPLE FILTERS = "N"
-# ======================================================
-for col in FILTER_COLUMNS:
-    pf = pivot.PivotFields(col)
-    pf.Orientation = 3     # xlPageField
-    pf.ClearAllFilters()
+omnia_cols = [
+    str(r[0]).strip()
+    for r in fm_wb[OMNIA_COL_SHEET].iter_rows(min_row=2, values_only=True)
+    if r[0]
+]
 
-    items = [i.Name for i in pf.PivotItems()]
-    if FILTER_VALUE in items:
-        pf.CurrentPage = FILTER_VALUE
+# ---------- STEP 2: LOAD COST WALK ----------
+cw_wb = load_workbook(COST_WALK_PATH, data_only=True)
+cw_ws = cw_wb[COST_WALK_SHEET]
 
-# ======================================================
-# FINAL TOUCH
-# ======================================================
-pivot.TableStyle2 = "PivotStyleMedium9"
-ws_pivot.autofit()
+tm1_headers = {
+    cw_ws.cell(row=HEADER_ROW, column=c).value: c
+    for c in range(1, cw_ws.max_column + 1)
+    if cw_ws.cell(row=HEADER_ROW, column=c).value
+}
 
-wb.save()
-wb.close()
-app.quit()
+country_rows = {}
+for r in range(DATA_START_ROW, cw_ws.max_row + 1):
+    country = cw_ws[f"{BOOKING_COUNTRY_COL}{r}"].value
+    if country:
+        country_rows.setdefault(str(country).strip(), []).append(r)
 
-print("✅ Pivot table created successfully using xlwings")
+# ---------- STEP 3: LOAD PT DATA ----------
+pt_df = pd.read_excel(PT_DATA_PATH)
+pt_df["Booking Country"] = pt_df["Booking Country"].astype(str).str.strip()
+pt_df["Business Area"] = pt_df["Business Area"].astype(str).str.strip()
 
+# ---------- STEP 4: CREATE TEMPLATES ----------
+for country in booking_countries:
+    output_path = os.path.join(OUTPUT_DIR, f"{country}_template.xlsx")
+    shutil.copy(MASTER_TEMPLATE_PATH, output_path)
+
+    tpl_wb = load_workbook(output_path)
+    tpl_ws = tpl_wb[TEMPLATE_SHEET]
+
+    rows = country_rows.get(country, [])
+
+    # ---- 4A: Fill C4 ----
+    tpl_ws[C4_CELL] = ", ".join(
+        str(cw_ws[f"{COL_A}{r}"].value)
+        for r in rows
+        if cw_ws[f"{COL_A}{r}"].value not in [None, ""]
+    )
+
+    # ---- 4B: Build FIRST-OCCURRENCE text map ----
+    template_text_cells = defaultdict(list)
+    for row in tpl_ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                template_text_cells[cell.value.strip()].append(cell)
+
+    # ---- 4C: TM1 → Field mapping ----
+    for tm1_header, field_name in tm1_to_field:
+        if tm1_header not in tm1_headers:
+            continue
+        if field_name not in template_text_cells:
+            continue
+        if not rows:
+            continue
+
+        col_idx = tm1_headers[tm1_header]
+
+        value = next(
+            (
+                cw_ws.cell(r, col_idx).value
+                for r in rows
+                if cw_ws.cell(r, col_idx).value not in [None, ""]
+            ),
+            None
+        )
+
+        if value is None:
+            continue
+
+        anchor = template_text_cells[field_name][0]
+        target = tpl_ws.cell(row=anchor.row, column=anchor.column + 1)
+
+        if target.value in [None, ""]:
+            target.value = value
+
+    # ---- 4D: OMNIA ROW–COLUMN FILL ----
+    for col_label in omnia_cols:
+        if col_label not in template_text_cells:
+            continue
+
+        col_anchor = template_text_cells[col_label][0]
+        col_idx = col_anchor.column
+
+        pt_filtered = pt_df[
+            (pt_df["Booking Country"] == country) &
+            (pt_df["Business Area"] == col_label)
+        ]
+
+        if pt_filtered.empty:
+            continue
+
+        for row_label in omnia_rows:
+            if row_label not in template_text_cells:
+                continue
+            if row_label not in pt_filtered.columns:
+                continue
+
+            row_anchor = template_text_cells[row_label][0]
+            value = pt_filtered.iloc[0][row_label]
+
+            if value in [None, ""]:
+                continue
+
+            target = tpl_ws.cell(
+                row=row_anchor.row,
+                column=col_idx
+            )
+
+            if target.value in [None, ""]:
+                target.value = value
+
+    tpl_wb.save(output_path)
+
+print("✅ All templates created and populated successfully.")
