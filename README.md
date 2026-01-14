@@ -9,7 +9,6 @@ import os
 MASTER_TEMPLATE_PATH = "Master_Template.xlsx"
 FIELD_MAPPER_PATH = "Field_mapper.xlsx"
 COST_WALK_PATH = "Cost_walk_summary.xlsx"
-PT_DATA_PATH = "pt_dataframe.xlsx"
 
 OUTPUT_DIR = "output_templates"
 
@@ -33,7 +32,7 @@ COL_A = "A"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ---------- STEP 1: LOAD FIELD MAPPER ----------
+# ---------- LOAD FIELD MAPPER ----------
 fm_wb = load_workbook(FIELD_MAPPER_PATH, data_only=True)
 
 # Booking Countries
@@ -53,6 +52,7 @@ for r in bc_ws.iter_rows(min_row=2, values_only=True):
 # TM1 → Field mapping
 ff_ws = fm_wb[FIELD_FILL_MAP_SHEET]
 ff_headers = {c.value: i + 1 for i, c in enumerate(ff_ws[1])}
+
 tm1_col = ff_headers["TM1"]
 field_col = ff_headers["Field name"]
 
@@ -64,20 +64,21 @@ for r in ff_ws.iter_rows(min_row=2, values_only=True):
             str(r[field_col - 1]).strip()
         ))
 
-# Omnia rows / cols
-omnia_rows = [
+# Omnia metrics (PT COLUMNS)
+omnia_metrics = [
     str(r[0]).strip()
     for r in fm_wb[OMNIA_ROWS_SHEET].iter_rows(min_row=2, values_only=True)
     if r[0]
 ]
 
-omnia_cols = [
+# Omnia business areas (PT ROW FILTER)
+omnia_business_areas = [
     str(r[0]).strip()
     for r in fm_wb[OMNIA_COL_SHEET].iter_rows(min_row=2, values_only=True)
     if r[0]
 ]
 
-# ---------- STEP 2: LOAD COST WALK ----------
+# ---------- LOAD COST WALK ----------
 cw_wb = load_workbook(COST_WALK_PATH, data_only=True)
 cw_ws = cw_wb[COST_WALK_SHEET]
 
@@ -93,12 +94,15 @@ for r in range(DATA_START_ROW, cw_ws.max_row + 1):
     if country:
         country_rows.setdefault(str(country).strip(), []).append(r)
 
-# ---------- STEP 3: LOAD PT DATA ----------
-pt_df = pd.read_excel(PT_DATA_PATH)
+# ---------- PT DATAFRAME (ALREADY IN MEMORY) ----------
+# pt_df must already exist
+# Required columns:
+# Booking Country, Business Area, + omnia_metrics
+
 pt_df["Booking Country"] = pt_df["Booking Country"].astype(str).str.strip()
 pt_df["Business Area"] = pt_df["Business Area"].astype(str).str.strip()
 
-# ---------- STEP 4: CREATE TEMPLATES ----------
+# ---------- CREATE TEMPLATES ----------
 for country in booking_countries:
     output_path = os.path.join(OUTPUT_DIR, f"{country}_template.xlsx")
     shutil.copy(MASTER_TEMPLATE_PATH, output_path)
@@ -108,31 +112,28 @@ for country in booking_countries:
 
     rows = country_rows.get(country, [])
 
-    # ---- 4A: Fill C4 ----
+    # ---- Fill C4 ----
     tpl_ws[C4_CELL] = ", ".join(
         str(cw_ws[f"{COL_A}{r}"].value)
         for r in rows
         if cw_ws[f"{COL_A}{r}"].value not in [None, ""]
     )
 
-    # ---- 4B: Build FIRST-OCCURRENCE text map ----
+    # ---- Build FIRST OCCURRENCE text map ----
     template_text_cells = defaultdict(list)
     for row in tpl_ws.iter_rows():
         for cell in row:
             if isinstance(cell.value, str):
                 template_text_cells[cell.value.strip()].append(cell)
 
-    # ---- 4C: TM1 → Field mapping ----
+    # ---- TM1 → Field fill ----
     for tm1_header, field_name in tm1_to_field:
-        if tm1_header not in tm1_headers:
-            continue
-        if field_name not in template_text_cells:
+        if tm1_header not in tm1_headers or field_name not in template_text_cells:
             continue
         if not rows:
             continue
 
         col_idx = tm1_headers[tm1_header]
-
         value = next(
             (
                 cw_ws.cell(r, col_idx).value
@@ -146,47 +147,48 @@ for country in booking_countries:
             continue
 
         anchor = template_text_cells[field_name][0]
-        target = tpl_ws.cell(row=anchor.row, column=anchor.column + 1)
-
+        target = tpl_ws.cell(anchor.row, anchor.column + 1)
         if target.value in [None, ""]:
             target.value = value
 
-    # ---- 4D: OMNIA ROW–COLUMN FILL ----
-    for col_label in omnia_cols:
-        if col_label not in template_text_cells:
-            continue
+    # ---- OMNIA MATRIX FILL (CORRECTED) ----
+    for business_area in omnia_business_areas:
 
-        col_anchor = template_text_cells[col_label][0]
+        # Column anchor in template
+        if business_area not in template_text_cells:
+            continue
+        col_anchor = template_text_cells[business_area][0]
         col_idx = col_anchor.column
 
-        pt_filtered = pt_df[
+        # Filter PT for country + business area
+        pt_slice = pt_df[
             (pt_df["Booking Country"] == country) &
-            (pt_df["Business Area"] == col_label)
+            (pt_df["Business Area"] == business_area)
         ]
 
-        if pt_filtered.empty:
+        if pt_slice.empty:
             continue
 
-        for row_label in omnia_rows:
-            if row_label not in template_text_cells:
+        pt_row = pt_slice.iloc[0]
+
+        for metric in omnia_metrics:
+
+            # Metric must be PT column
+            if metric not in pt_row:
                 continue
-            if row_label not in pt_filtered.columns:
+            if metric not in template_text_cells:
                 continue
 
-            row_anchor = template_text_cells[row_label][0]
-            value = pt_filtered.iloc[0][row_label]
+            row_anchor = template_text_cells[metric][0]
+            value = pt_row[metric]
 
             if value in [None, ""]:
                 continue
 
-            target = tpl_ws.cell(
-                row=row_anchor.row,
-                column=col_idx
-            )
-
+            target = tpl_ws.cell(row_anchor.row, col_idx)
             if target.value in [None, ""]:
                 target.value = value
 
     tpl_wb.save(output_path)
 
-print("✅ All templates created and populated successfully.")
+print("✅ Templates populated correctly using Omnia row/column logic.")
