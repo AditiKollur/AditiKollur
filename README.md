@@ -1,9 +1,14 @@
 ```
-top_column = None
+import pandas as pd
 
-for col in df.columns:
-    if df[col].astype(str).str.contains("Top", case=False, na=False).any():
-        top_column = col
-        break
+# example
+l = ["Region", "Country", "Date"]
+prod = ["Prod", "Product", "SKU"]
 
-print("Column containing 'Top':", top_column)
+# keep columns
+cols_to_keep = [
+    col for col in df.columns
+    if col in l or any(p.lower() in col.lower() for p in prod)
+]
+
+df_filtered = df[cols_to_keep]
