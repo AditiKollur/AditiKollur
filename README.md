@@ -1,14 +1,14 @@
-```
-import pandas as pd
+import re
 
-# example
-l = ["Region", "Country", "Date"]
-prod = ["Prod", "Product", "SKU"]
+l = ["Region", "Country"]
+prod = ["Prod", "Product"]
 
-# keep columns
+# build regex pattern
+prod_pattern = r'^([^\w]*(' + '|'.join(prod) + r')[^\w\d]*[\d\W]*)$'
+
 cols_to_keep = [
     col for col in df.columns
-    if col in l or any(p.lower() in col.lower() for p in prod)
+    if col in l or re.fullmatch(prod_pattern, col)
 ]
 
 df_filtered = df[cols_to_keep]
