@@ -2,40 +2,48 @@
 import pandas as pd
 import re
 
-# ================= KEEP ONLY REQUIRED COLUMNS =================
-# Strictly allow only GPS/GTS/IB with .1 .2 .3
-pattern = re.compile(r"^(GPS|GTS|IB)\.(1|2|3)$")
+# ===================== SAMPLE DATA =====================
+cost5 = pd.DataFrame(columns=[
+    "CIB",
+    "Gross Revenue",
+    "GPS",
+    "GPS.1",
+    "IB",
+    "Net Revenue",
+    "GTS",
+    "GPS.2",
+    "Random Column"
+])
 
-cols_to_keep = [
-    c for c in cost5.columns
-    if c == "CIB" or pattern.fullmatch(c)
-]
+# List of anchor (item) columns
+l = ["Gross Revenue", "Net Revenue"]
 
-cost5 = cost5[cols_to_keep]
+# Product column pattern
+prod_pattern = re.compile(r"^(GPS|GTS|IB)(\.\d+)?$")
 
-# ================= TRANSFORMATION =================
+# ===================== RENAMING LOGIC =====================
+cols = list(cost5.columns)
+new_cols = cols.copy()
 
-# Convert columns to MultiIndex
-new_cols = []
-for c in cost5.columns:
-    if c == "CIB":
-        new_cols.append(("CIB", ""))
-    else:
-        metric, period = c.split(".")
-        new_cols.append((metric, period))
+# Find positions of anchor columns
+anchor_positions = [i for i, c in enumerate(cols) if c in l]
+anchor_positions.append(len(cols))  # sentinel
 
-cost5.columns = pd.MultiIndex.from_tuples(new_cols)
+for idx in range(len(anchor_positions) - 1):
+    start = anchor_positions[idx]
+    end = anchor_positions[idx + 1]
+    anchor_name = cols[start]
 
-# Reshape to required format
-out = (
-    cost5
-    .set_index(("CIB", ""))
-    .stack(level=0)
-    .reset_index()
-)
+    # Rename prod columns between anchors
+    for j in range(start + 1, end):
+        col = cols[j]
 
-# Rename final columns
-out.columns = ["CIB", "Metric", "1", "2", "3"]
+        if prod_pattern.fullmatch(col):
+            prod = col.split(".")[0]  # GPS.1 → GPS
+            new_cols[j] = f"{prod}_{anchor_name}"
 
-# ================= RESULT =================
-print(out)
+# Apply renamed columns
+cost5.columns = new_cols
+
+# ===================== RESULT =====================
+print(cost5.columns.tolist())
