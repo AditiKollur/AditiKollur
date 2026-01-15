@@ -1,5 +1,6 @@
 ```
 import pandas as pd
+import re
 
 # ================= SAMPLE INPUT =================
 df = pd.DataFrame({
@@ -13,11 +14,23 @@ df = pd.DataFrame({
     "GPS.3": [12, 22],
     "GTS.3": [7, 9],
     "IB.3": [4, 5],
+    "RandomCol": [999, 888],          # <- will be dropped
+    "Other_Stuff": ["x", "y"]         # <- will be dropped
 })
+
+# ================= DROP UNWANTED COLUMNS =================
+pattern = re.compile(r"^(GPS|GTS|IB)\.\d+$")
+
+cols_to_keep = [
+    c for c in df.columns
+    if c == "Booking Country" or pattern.match(c)
+]
+
+df = df[cols_to_keep]
 
 # ================= TRANSFORMATION =================
 
-# Step 1: Convert columns into MultiIndex
+# Convert columns to MultiIndex
 new_cols = []
 for c in df.columns:
     if c == "Booking Country":
@@ -28,7 +41,7 @@ for c in df.columns:
 
 df.columns = pd.MultiIndex.from_tuples(new_cols)
 
-# Step 2: Reshape
+# Reshape
 out = (
     df
     .set_index(("Booking Country", ""))
@@ -36,8 +49,8 @@ out = (
     .reset_index()
 )
 
-# Step 3: Rename columns
-out.columns = ["Booking Country", "Metric", "1", "2", "3"]
+# Rename columns
+out.columns = ["Booking Country", "Metric"] + list(out.columns[2:])
 
 # ================= RESULT =================
 print(out)
