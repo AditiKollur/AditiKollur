@@ -32,14 +32,19 @@ except:
 
 exc_ws = wb.sheets.add(EXCEPTION_SHEET, before=wb.sheets[0])
 
+# Headers (2 columns + 3 empty)
 exc_ws.range("A1").value = [
-    "EADzero_RWAnonzero", "Amount_RWA", "", "", "",
-    "EADnonzero_RWAzero", "Amount_EAD"
+    "Exception_Type",
+    "Link",
+    "Amount",
+    "",
+    "",
+    ""
 ]
 
-exc_row = 2   # IMPORTANT: global row counter
+exc_row = 2  # global append pointer
 
-# ================= MAIN PROCESS =================
+# ================= MAIN LOOP =================
 sheet_names = {s.name for s in wb.sheets}
 
 for _, rep in list_rep.iterrows():
@@ -65,7 +70,7 @@ for _, rep in list_rep.iterrows():
     if not ead_vals or not rwa_vals:
         continue
 
-    # ---- FIND HEADER ROW ----
+    # ---- FIND HEADER ----
     start_row = None
     for i, (e, r) in enumerate(zip(ead_vals, rwa_vals)):
         if (
@@ -78,7 +83,7 @@ for _, rep in list_rep.iterrows():
     if not start_row:
         continue
 
-    # ---- ROW-LEVEL EXCEPTIONS ----
+    # ---- ROW-BY-ROW APPEND ----
     for idx in range(start_row - 1, len(ead_vals)):
         e = ead_vals[idx]
         r = rwa_vals[idx]
@@ -88,36 +93,31 @@ for _, rep in list_rep.iterrows():
 
         excel_row = idx + 1
 
-        # CASE 1: EAD = 0, RWA ≠ 0
+        # CASE 1
         if e == 0 and r != 0:
-            target = f"#'{sheet_name}'!{ead_col}{excel_row}"
-            link_text = f"{sheet_name}_{ead_col}{excel_row}"
+            link = f"#'{sheet_name}'!{ead_col}{excel_row}"
+            text = f"{sheet_name}_{ead_col}{excel_row}"
 
-            exc_ws.range(f"A{exc_row}").add_hyperlink(
-                target,
-                text_to_display=link_text
-            )
-            exc_ws.range(f"B{exc_row}").value = r
+            exc_ws.range(f"A{exc_row}").value = "EAD zero / RWA non-zero"
+            exc_ws.range(f"B{exc_row}").add_hyperlink(link, text_to_display=text)
+            exc_ws.range(f"C{exc_row}").value = r
             exc_row += 1
 
-        # CASE 2: RWA = 0, EAD ≠ 0
+        # CASE 2
         elif r == 0 and e != 0:
-            target = f"#'{sheet_name}'!{rwa_col}{excel_row}"
-            link_text = f"{sheet_name}_{rwa_col}{excel_row}"
+            link = f"#'{sheet_name}'!{rwa_col}{excel_row}"
+            text = f"{sheet_name}_{rwa_col}{excel_row}"
 
-            exc_ws.range(f"F{exc_row}").add_hyperlink(
-                target,
-                text_to_display=link_text
-            )
-            exc_ws.range(f"G{exc_row}").value = e
+            exc_ws.range(f"A{exc_row}").value = "RWA zero / EAD non-zero"
+            exc_ws.range(f"B{exc_row}").add_hyperlink(link, text_to_display=text)
+            exc_ws.range(f"C{exc_row}").value = e
             exc_row += 1
 
-# ================= FORCE SAVE =================
+# ================= SAVE =================
 wb.api.SaveAs(OUTPUT_FILE)
-
 wb.close()
+
 app.calculation = 'automatic'
 app.quit()
 
-print("All hyperlinks created and working across all sheets.")
-
+print("All exceptions appended correctly across all sheets.")
