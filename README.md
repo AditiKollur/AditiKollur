@@ -1,1 +1,123 @@
+```
+import xlwings as xw
+import pandas as pd
+
+# ================= CONFIG =================
+INPUT_FILE = r"C:\path\to\protected.xlsx"
+OUTPUT_FILE = r"C:\path\to\protected_UPDATED.xlsx"
+PASSWORD = "your_password"
+
+EXCEPTION_SHEET = "EAD_RWA exception"
+
+list_ead = ["EAD", "Exposure"]
+list_rwa = ["RWA", "Risk"]
+
+# list_rep dataframe must exist
+# Columns: Sheet_Name, Check, EAD, RWA
+
+# ================= OPEN EXCEL =================
+app = xw.App(visible=False)
+app.screen_updating = False
+app.display_alerts = False
+app.enable_events = False
+app.calculation = 'manual'
+
+wb = app.books.open(INPUT_FILE, password=PASSWORD)
+
+# ================= CREATE EXCEPTION SHEET FIRST =================
+try:
+    wb.sheets[EXCEPTION_SHEET].delete()
+except:
+    pass
+
+exc_ws = wb.sheets.add(EXCEPTION_SHEET, before=wb.sheets[0])
+
+exc_ws.range("A1").value = [
+    "EADzero_RWAnonzero", "Amount_RWA", "", "", "",
+    "EADnonzero_RWAzero", "Amount_EAD"
+]
+
+exc_row = 2   # IMPORTANT: global row counter
+
+# ================= MAIN PROCESS =================
+sheet_names = {s.name for s in wb.sheets}
+
+for _, rep in list_rep.iterrows():
+
+    if str(rep["Check"]).upper() != "Y":
+        continue
+
+    sheet_name = rep["Sheet_Name"]
+    if sheet_name not in sheet_names:
+        continue
+
+    ws = wb.sheets[sheet_name]
+
+    ead_col = rep["EAD"]
+    rwa_col = rep["RWA"]
+
+    last_row = ws.used_range.last_cell.row
+
+    # ---- BULK READ ----
+    ead_vals = ws.range(f"{ead_col}1:{ead_col}{last_row}").value
+    rwa_vals = ws.range(f"{rwa_col}1:{rwa_col}{last_row}").value
+
+    if not ead_vals or not rwa_vals:
+        continue
+
+    # ---- FIND HEADER ROW ----
+    start_row = None
+    for i, (e, r) in enumerate(zip(ead_vals, rwa_vals)):
+        if (
+            isinstance(e, str) and any(x in e for x in list_ead)
+            and isinstance(r, str) and any(x in r for x in list_rwa)
+        ):
+            start_row = i + 2
+            break
+
+    if not start_row:
+        continue
+
+    # ---- ROW-LEVEL EXCEPTIONS ----
+    for idx in range(start_row - 1, len(ead_vals)):
+        e = ead_vals[idx]
+        r = rwa_vals[idx]
+
+        if not isinstance(e, (int, float)) or not isinstance(r, (int, float)):
+            continue
+
+        excel_row = idx + 1
+
+        # CASE 1: EAD = 0, RWA ≠ 0
+        if e == 0 and r != 0:
+            target = f"#'{sheet_name}'!{ead_col}{excel_row}"
+            link_text = f"{sheet_name}_{ead_col}{excel_row}"
+
+            exc_ws.range(f"A{exc_row}").add_hyperlink(
+                target,
+                text_to_display=link_text
+            )
+            exc_ws.range(f"B{exc_row}").value = r
+            exc_row += 1
+
+        # CASE 2: RWA = 0, EAD ≠ 0
+        elif r == 0 and e != 0:
+            target = f"#'{sheet_name}'!{rwa_col}{excel_row}"
+            link_text = f"{sheet_name}_{rwa_col}{excel_row}"
+
+            exc_ws.range(f"F{exc_row}").add_hyperlink(
+                target,
+                text_to_display=link_text
+            )
+            exc_ws.range(f"G{exc_row}").value = e
+            exc_row += 1
+
+# ================= FORCE SAVE =================
+wb.api.SaveAs(OUTPUT_FILE)
+
+wb.close()
+app.calculation = 'automatic'
+app.quit()
+
+print("All hyperlinks created and working across all sheets.")
 
