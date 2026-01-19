@@ -1,86 +1,106 @@
 ```
-import os
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils import column_index_from_string
+from openpyxl.worksheet.hyperlink import Hyperlink
 
 # ================= CONFIG =================
-FOLDER_PATH = "input_files"      # folder containing excel files
-OUTPUT_FILE = "final_output.xlsx"
+WORKBOOK_PATH = "input.xlsx"
+EXCEPTION_SHEET = "EAD_RWA exception"
 
-START_ROW_DEF = 27
-HEADER_ROW_DEF = 26
+list_ead = ["EAD", "Exposure"]
+list_rwa = ["RWA", "Risk"]
 
-# ================= STORAGE =================
-bc_data = {}
-def_data = {}
+# list_rep dataframe assumed already loaded
+# columns: Sheet_Name, Check, EAD, RWA
 
-common_b_col = None
-common_b_col_def = None
+# ================= LOAD WORKBOOK =================
+wb = load_workbook(WORKBOOK_PATH)
 
-# ================= PROCESS FILES =================
-for file in os.listdir(FOLDER_PATH):
-    if not file.endswith(".xlsx"):
+# ================= CREATE / RESET EXCEPTION SHEET =================
+if EXCEPTION_SHEET in wb.sheetnames:
+    del wb[EXCEPTION_SHEET]
+
+exc_ws = wb.create_sheet(EXCEPTION_SHEET)
+
+headers = [
+    "EADzero_RWAnonzero", "Amount_RWA", "", "", "",
+    "EADnonzero_RWAzero", "Amount_EAD"
+]
+exc_ws.append(headers)
+
+exc_row = 2
+
+# ================= PROCESS SHEETS =================
+for _, rep in list_rep.iterrows():
+    if str(rep["Check"]).upper() != "Y":
         continue
 
-    file_path = os.path.join(FOLDER_PATH, file)
-    file_key = file.split("_")[0]   # first part of filename
+    sheet_name = rep["Sheet_Name"]
+    if sheet_name not in wb.sheetnames:
+        continue
 
-    wb = load_workbook(file_path, data_only=True)
-    ws = wb.active
+    ws = wb[sheet_name]
 
-    # ---------- B & C extraction ----------
-    b_vals = []
-    c_vals = []
+    ead_col_letter = rep["EAD"]
+    rwa_col_letter = rep["RWA"]
 
-    for row in range(1, ws.max_row + 1):
-        b = ws[f"B{row}"].value
-        c = ws[f"C{row}"].value
-        if b is not None:
-            b_vals.append(b)
-            c_vals.append(c)
+    ead_col = column_index_from_string(ead_col_letter)
+    rwa_col = column_index_from_string(rwa_col_letter)
 
-    if common_b_col is None:
-        common_b_col = b_vals
+    start_row = None
 
-    bc_data[file_key] = c_vals
+    # ---- Find first row where both strings exist ----
+    for r in range(1, ws.max_row + 1):
+        ead_val = str(ws.cell(r, ead_col).value or "")
+        rwa_val = str(ws.cell(r, rwa_col).value or "")
 
-    # ---------- D/E/F extraction ----------
-    headers = [
-        ws[f"D{HEADER_ROW_DEF}"].value,
-        ws[f"E{HEADER_ROW_DEF}"].value,
-        ws[f"F{HEADER_ROW_DEF}"].value,
-    ]
+        if any(x in ead_val for x in list_ead) and any(x in rwa_val for x in list_rwa):
+            start_row = r + 1
+            break
 
-    b_def = []
-    d_vals, e_vals, f_vals = [], [], []
+    if not start_row:
+        continue
 
-    for row in range(START_ROW_DEF, ws.max_row + 1):
-        b = ws[f"B{row}"].value
-        if b is None:
-            continue
+    ead_numbers = []
+    rwa_numbers = []
+    ead_cell = None
+    rwa_cell = None
 
-        b_def.append(b)
-        d_vals.append(ws[f"D{row}"].value)
-        e_vals.append(ws[f"E{row}"].value)
-        f_vals.append(ws[f"F{row}"].value)
+    # ---- Scan numeric values ----
+    for r in range(start_row, ws.max_row + 1):
+        ead_v = ws.cell(r, ead_col).value
+        rwa_v = ws.cell(r, rwa_col).value
 
-    if common_b_col_def is None:
-        common_b_col_def = b_def
+        if isinstance(ead_v, (int, float)):
+            ead_numbers.append(ead_v)
+            if ead_v != 0 and not ead_cell:
+                ead_cell = ws.cell(r, ead_col)
 
-    def_data[f"{file_key}_{headers[0]}"] = d_vals
-    def_data[f"{file_key}_{headers[1]}"] = e_vals
-    def_data[f"{file_key}_{headers[2]}"] = f_vals
+        if isinstance(rwa_v, (int, float)):
+            rwa_numbers.append(rwa_v)
+            if rwa_v != 0 and not rwa_cell:
+                rwa_cell = ws.cell(r, rwa_col)
 
-# ================= BUILD DATAFRAMES =================
-df_bc = pd.DataFrame(bc_data)
-df_bc.insert(0, "Label", common_b_col)
+    # ================= CONDITIONS =================
+    ead_all_zero = ead_numbers and all(v == 0 for v in ead_numbers)
+    rwa_all_zero = rwa_numbers and all(v == 0 for v in rwa_numbers)
 
-df_def = pd.DataFrame(def_data)
-df_def.insert(0, "Label", common_b_col_def)
+    # ---- Case 1 ----
+    if ead_all_zero and any(v != 0 for v in rwa_numbers):
+        link = f"#{sheet_name}!{ead_col_letter}{ead_cell.row}"
+        exc_ws.cell(exc_row, 1).value = "Link"
+        exc_ws.cell(exc_row, 1).hyperlink = link
+        exc_ws.cell(exc_row, 2).value = rwa_cell.value
+        exc_row += 1
 
-# ================= WRITE OUTPUT =================
-with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-    df_bc.to_excel(writer, sheet_name="BC_Extract", index=False)
-    df_def.to_excel(writer, sheet_name="DEF_Extract", index=False)
+    # ---- Case 2 ----
+    if rwa_all_zero and any(v != 0 for v in ead_numbers):
+        link = f"#{sheet_name}!{rwa_col_letter}{rwa_cell.row}"
+        exc_ws.cell(exc_row, 6).value = "Link"
+        exc_ws.cell(exc_row, 6).hyperlink = link
+        exc_ws.cell(exc_row, 7).value = ead_cell.value
+        exc_row += 1
 
-print("Extraction completed successfully!")
+# ================= SAVE =================
+wb.save(WORKBOOK_PATH)
